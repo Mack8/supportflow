@@ -4,22 +4,56 @@ import {
   ApiError,
   apiFetch,
   clearStoredToken,
+  getStoredToken,
   setStoredToken,
   setStoredUser,
 } from "@/lib/api-client";
 import type { LoginResponse, User } from "@/types/domain";
 import { LogIn, UserPlus } from "lucide-react";
-import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
+import { FormEvent, useEffect, useState } from "react";
 
 export default function LoginPage() {
+  const router = useRouter();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("admin@test.com");
-  const [password, setPassword] = useState("Password123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    let ignore = false;
+
+    async function redirectIfSessionIsValid() {
+      if (!getStoredToken()) {
+        setCheckingSession(false);
+        return;
+      }
+
+      try {
+        const user = await apiFetch<User>("/auth/me");
+
+        if (!ignore) {
+          setStoredUser(user);
+          router.replace(getNextPath());
+        }
+      } catch {
+        clearStoredToken();
+        if (!ignore) {
+          setCheckingSession(false);
+        }
+      }
+    }
+
+    void redirectIfSessionIsValid();
+
+    return () => {
+      ignore = true;
+    };
+  }, [router]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -47,12 +81,22 @@ export default function LoginPage() {
 
       setStoredToken(session.accessToken);
       setStoredUser(session.user);
-      setMessage(`Signed in as ${session.user.email}`);
+      router.replace(getNextPath());
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Request failed");
     } finally {
       setLoading(false);
     }
+  }
+
+  if (checkingSession) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-gray-2 p-4">
+        <div className="text-sm font-semibold text-gray-500">
+          Checking session...
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -66,8 +110,7 @@ export default function LoginPage() {
             {mode === "login" ? "Sign in" : "Create account"}
           </h1>
           <p className="mt-2 text-sm leading-6 text-gray-600">
-            Use this page for real JWT testing. Local development can still use
-            protected screens without a token while auth bypass is enabled.
+            Access the support workspace with your assigned account.
           </p>
         </div>
 
@@ -149,21 +192,28 @@ export default function LoginPage() {
             type="button"
             onClick={() => {
               clearStoredToken();
-              setMessage("Stored token cleared.");
+              setMessage("Stored session cleared.");
             }}
             className="font-semibold text-gray-500"
           >
-            Clear token
+            Clear session
           </button>
         </div>
-
-        <Link
-          href="/dashboard"
-          className="mt-6 flex h-10 items-center justify-center rounded-md border border-gray-200 text-sm font-semibold text-gray-700 hover:bg-gray-50"
-        >
-          Continue to dashboard
-        </Link>
       </section>
     </main>
   );
+}
+
+function getNextPath() {
+  if (typeof window === "undefined") {
+    return "/dashboard";
+  }
+
+  const next = new URLSearchParams(window.location.search).get("next");
+
+  if (next?.startsWith("/") && !next.startsWith("//")) {
+    return next;
+  }
+
+  return "/dashboard";
 }

@@ -2,6 +2,10 @@ import type { User } from "@/types/domain";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:3000";
+const AUTH_TOKEN_KEY = "supportflow_token";
+const AUTH_USER_KEY = "supportflow_user";
+
+export const AUTH_CHANGE_EVENT = "supportflow_auth_changed";
 
 type ApiRequestOptions = RequestInit & {
   skipAuth?: boolean;
@@ -23,16 +27,18 @@ export function getStoredToken() {
     return null;
   }
 
-  return window.localStorage.getItem("supportflow_token");
+  return window.localStorage.getItem(AUTH_TOKEN_KEY);
 }
 
 export function setStoredToken(token: string) {
-  window.localStorage.setItem("supportflow_token", token);
+  window.localStorage.setItem(AUTH_TOKEN_KEY, token);
+  notifyAuthChanged();
 }
 
 export function clearStoredToken() {
-  window.localStorage.removeItem("supportflow_token");
-  window.localStorage.removeItem("supportflow_user");
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
+  window.localStorage.removeItem(AUTH_USER_KEY);
+  notifyAuthChanged();
 }
 
 export function getStoredUser() {
@@ -40,7 +46,7 @@ export function getStoredUser() {
     return null;
   }
 
-  const value = window.localStorage.getItem("supportflow_user");
+  const value = window.localStorage.getItem(AUTH_USER_KEY);
   if (!value) {
     return null;
   }
@@ -48,13 +54,20 @@ export function getStoredUser() {
   try {
     return JSON.parse(value) as User;
   } catch {
-    window.localStorage.removeItem("supportflow_user");
+    window.localStorage.removeItem(AUTH_USER_KEY);
     return null;
   }
 }
 
 export function setStoredUser(user: User) {
-  window.localStorage.setItem("supportflow_user", JSON.stringify(user));
+  window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  notifyAuthChanged();
+}
+
+function notifyAuthChanged() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_CHANGE_EVENT));
+  }
 }
 
 export async function apiFetch<T>(
@@ -92,6 +105,10 @@ export async function apiFetch<T>(
           ? data.message.join(", ")
           : String(data.message)
         : "API request failed";
+
+    if (response.status === 401 && !options.skipAuth) {
+      clearStoredToken();
+    }
 
     throw new ApiError(message, response.status, data);
   }

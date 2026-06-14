@@ -3,28 +3,138 @@
 import {
   BarChart3,
   LayoutDashboard,
-  LogIn,
+  LogOut,
   Menu,
   PlusCircle,
   Ticket,
+  UserCircle2,
   UserRoundCog,
   X,
 } from "lucide-react";
+import {
+  AUTH_CHANGE_EVENT,
+  ApiError,
+  apiFetch,
+  clearStoredToken,
+  getStoredToken,
+  getStoredUser,
+  setStoredUser,
+} from "@/lib/api-client";
+import { ErrorState } from "@/components/ui/error-state";
+import { LoadingState } from "@/components/ui/loading-state";
+import type { User } from "@/types/domain";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/tickets", label: "Tickets", icon: Ticket },
   { href: "/tickets/new", label: "New ticket", icon: PlusCircle },
-  { href: "/admin/users", label: "Users", icon: UserRoundCog },
-  { href: "/login", label: "Login", icon: LogIn },
+  { href: "/admin/users", label: "Users", icon: UserRoundCog, adminOnly: true },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const [sessionUser, setSessionUser] = useState<User | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const pathname = usePathname();
+  const router = useRouter();
+
+  const visibleNavItems = useMemo(
+    () =>
+      navItems.filter(
+        (item) => !item.adminOnly || sessionUser?.role === "ADMIN",
+      ),
+    [sessionUser],
+  );
+
+  useEffect(() => {
+    let ignore = false;
+
+    async function validateSession() {
+      const token = getStoredToken();
+      const cachedUser = getStoredUser();
+
+      setSessionError(null);
+
+      if (!token) {
+        clearStoredToken();
+        router.replace(`/login?next=${encodeURIComponent(pathname)}`);
+        return;
+      }
+
+      if (cachedUser) {
+        setSessionUser(cachedUser);
+      }
+
+      try {
+        const user = await apiFetch<User>("/auth/me");
+
+        if (!ignore) {
+          setStoredUser(user);
+          setSessionUser(user);
+          setCheckingSession(false);
+        }
+      } catch (err) {
+        if (ignore) {
+          return;
+        }
+
+        if (err instanceof ApiError && err.status === 401) {
+          clearStoredToken();
+          router.replace(`/login?next=${encodeURIComponent(pathname)}`);
+          return;
+        }
+
+        setSessionError(
+          err instanceof Error ? err.message : "Could not validate session",
+        );
+        setCheckingSession(false);
+      }
+    }
+
+    void validateSession();
+
+    function syncSessionFromStorage() {
+      setSessionUser(getStoredUser());
+    }
+
+    window.addEventListener(AUTH_CHANGE_EVENT, syncSessionFromStorage);
+    window.addEventListener("storage", syncSessionFromStorage);
+
+    return () => {
+      ignore = true;
+      window.removeEventListener(AUTH_CHANGE_EVENT, syncSessionFromStorage);
+      window.removeEventListener("storage", syncSessionFromStorage);
+    };
+  }, [pathname, router]);
+
+  function handleLogout() {
+    clearStoredToken();
+    setOpen(false);
+    router.replace("/login");
+  }
+
+  if (checkingSession && !sessionUser) {
+    return (
+      <div className="min-h-screen bg-gray-2 p-4 md:p-6">
+        <LoadingState label="Checking session" />
+      </div>
+    );
+  }
+
+  if (sessionError) {
+    return (
+      <div className="min-h-screen bg-gray-2 p-4 md:p-6">
+        <ErrorState
+          message={sessionError}
+          onRetry={() => window.location.reload()}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-2 text-dark">
@@ -59,7 +169,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
 
           <nav className="flex-1 space-y-1 px-4 py-4">
-            {navItems.map((item) => {
+            {visibleNavItems.map((item) => {
               const active =
                 pathname === item.href ||
                 (item.href !== "/dashboard" && pathname.startsWith(item.href));
@@ -82,6 +192,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               );
             })}
           </nav>
+
+          <div className="border-t border-gray-200 p-4">
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm font-semibold text-gray-600 hover:bg-gray-100 hover:text-dark"
+            >
+              <LogOut size={20} />
+              Log out
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -107,8 +228,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="hidden text-sm font-semibold text-gray-500 lg:block">
             Internal support workspace
           </div>
-          <div className="rounded-md bg-green-light-7 px-3 py-1 text-xs font-semibold text-green">
-            API local
+          <div className="flex items-center gap-3">
+            {sessionUser ? (
+              <div className="hidden items-center gap-2 text-right sm:flex">
+                <UserCircle2 size={22} className="text-gray-500" />
+                <div>
+                  <div className="text-sm font-semibold text-dark">
+                    {sessionUser.name}
+                  </div>
+                  <div className="text-xs font-medium text-gray-500">
+                    {sessionUser.role}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-200 px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+            >
+              <LogOut size={17} />
+              Logout
+            </button>
           </div>
         </header>
 
