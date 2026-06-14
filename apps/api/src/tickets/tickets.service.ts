@@ -11,6 +11,7 @@ import {
 import {
   TicketCategory,
   TicketPriority,
+  Role,
   TicketStatus,
 } from '../../generated/prisma/enums.js';
 import { areAuthGuardsDisabled } from '../auth/auth.config';
@@ -182,7 +183,15 @@ export class TicketsService {
       return fallbackUserId;
     }
 
+    if (fallbackUserId && this.canCreateOnBehalf(user.role)) {
+      return fallbackUserId;
+    }
+
     return user.id;
+  }
+
+  private canCreateOnBehalf(role: Role): boolean {
+    return role === Role.ADMIN || role === Role.AGENT;
   }
 
   private resolvePriority(category: TicketCategory): TicketPriority {
