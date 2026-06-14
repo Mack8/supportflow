@@ -59,12 +59,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       setSessionError(null);
 
-      if (!token) {
-        clearStoredToken();
-        router.replace(`/login?next=${encodeURIComponent(pathname)}`);
-        return;
-      }
-
       if (cachedUser) {
         setSessionUser(cachedUser);
       }
