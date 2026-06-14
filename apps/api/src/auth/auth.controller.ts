@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { UsersService } from '../users/users.service';
@@ -35,7 +36,13 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Get('me')
-  me(@CurrentUser() user: AuthenticatedUser) {
-    return this.usersService.findOne(user.id);
+  async me(@CurrentUser() user: AuthenticatedUser) {
+    const currentUser = await this.usersService.findOne(user.id);
+
+    if (!currentUser.isActive) {
+      throw new UnauthorizedException('User is inactive');
+    }
+
+    return currentUser;
   }
 }
