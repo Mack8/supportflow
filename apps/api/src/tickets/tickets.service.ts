@@ -22,6 +22,9 @@ import { UpdateTicketDto } from './dto/update-ticket.dto';
 
 @Injectable()
 export class TicketsService {
+  private readonly defaultPage = 1;
+  private readonly defaultPageLimit = 25;
+
   private readonly safeUserSelect = {
     id: true,
     name: true,
@@ -77,9 +80,12 @@ export class TicketsService {
 
   async findAll(query: FindTicketsQueryDto) {
     const where = this.buildWhere(query);
+    const { skip, take } = this.resolvePagination(query);
 
     return this.prisma.ticket.findMany({
       where,
+      skip,
+      take,
       select: this.ticketSelect,
       orderBy: [
         { priority: 'desc' },
@@ -236,6 +242,16 @@ export class TicketsService {
     }
 
     return where;
+  }
+
+  private resolvePagination(query: FindTicketsQueryDto) {
+    const page = query.page ?? this.defaultPage;
+    const limit = query.limit ?? this.defaultPageLimit;
+
+    return {
+      skip: (page - 1) * limit,
+      take: limit,
+    };
   }
 
   private parseDate(value?: string): Date | undefined {

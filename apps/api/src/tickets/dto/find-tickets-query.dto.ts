@@ -1,11 +1,15 @@
 import {
   IsBooleanString,
   IsEnum,
+  IsInt,
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import {
   TicketCategory,
   TicketPriority,
@@ -45,4 +49,17 @@ export class FindTicketsQueryDto {
   @IsOptional()
   @IsBooleanString()
   overdue?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
 }
