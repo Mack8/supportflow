@@ -21,8 +21,9 @@ export class JwtAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const token = this.extractTokenFromHeader(request);
 
-    if (areAuthGuardsDisabled()) {
+    if (!token && areAuthGuardsDisabled()) {
       request.user = {
         id: 'local-dev-admin',
         email: 'local-dev-admin@example.com',
@@ -31,8 +32,6 @@ export class JwtAuthGuard implements CanActivate {
 
       return true;
     }
-
-    const token = this.extractTokenFromHeader(request);
 
     if (!token) {
       throw new UnauthorizedException('Missing authorization token');
