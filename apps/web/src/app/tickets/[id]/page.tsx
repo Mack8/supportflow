@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/badge";
 import { ErrorState } from "@/components/ui/error-state";
 import { LoadingState } from "@/components/ui/loading-state";
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, getStoredUser } from "@/lib/api-client";
 import {
   categoryLabel,
   formatDate,
@@ -41,6 +41,7 @@ export default function TicketDetailPage() {
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [status, setStatus] = useState<TicketStatus>("OPEN");
   const [category, setCategory] = useState<TicketCategory>("GENERAL");
   const [assignedToId, setAssignedToId] = useState("");
@@ -52,6 +53,10 @@ export default function TicketDetailPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const canUseInternalComments =
+    currentUser?.role === "ADMIN" || currentUser?.role === "AGENT";
+  const publicComments = comments.filter((comment) => !comment.isInternal);
+  const internalComments = comments.filter((comment) => comment.isInternal);
 
   const syncTicketForm = useCallback((ticketData: Ticket) => {
     setStatus(ticketData.status);
@@ -74,6 +79,7 @@ export default function TicketDetailPage() {
       setTicket(ticketData);
       setComments(commentData);
       setUsers(userData);
+      setCurrentUser(getStoredUser());
       syncTicketForm(ticketData);
       setUserId(ticketData.createdById);
     } catch (err) {
@@ -98,6 +104,7 @@ export default function TicketDetailPage() {
           setTicket(ticketData);
           setComments(commentData);
           setUsers(userData);
+          setCurrentUser(getStoredUser());
           syncTicketForm(ticketData);
           setUserId(ticketData.createdById);
         }
@@ -156,7 +163,7 @@ export default function TicketDetailPage() {
           ticketId,
           userId,
           content,
-          isInternal,
+          isInternal: canUseInternalComments && isInternal,
         }),
       });
       setContent("");
@@ -243,34 +250,17 @@ export default function TicketDetailPage() {
                   <MessageSquare size={20} />
                   Comments
                 </h2>
-                <div className="space-y-3">
-                  {comments.map((comment) => (
-                    <article
-                      key={comment.id}
-                      className="rounded-lg border border-gray-200 p-4"
-                    >
-                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-sm font-semibold text-dark">
-                          {comment.user?.name ?? "Unknown user"}
-                        </div>
-                        <div className="text-xs text-gray-500">
-                          {formatDate(comment.createdAt)}
-                        </div>
-                      </div>
-                      <p className="text-sm leading-6 text-gray-700">
-                        {comment.content}
-                      </p>
-                      {comment.isInternal ? (
-                        <div className="mt-2 text-xs font-semibold text-yellow-700">
-                          Internal note
-                        </div>
-                      ) : null}
-                    </article>
-                  ))}
-                  {comments.length === 0 ? (
-                    <div className="rounded-lg bg-gray-50 p-5 text-center text-sm text-gray-500">
-                      No comments yet.
-                    </div>
+                <div className="space-y-5">
+                  <CommentGroup
+                    title="Public comments"
+                    comments={publicComments}
+                  />
+                  {canUseInternalComments ? (
+                    <CommentGroup
+                      title="Internal notes"
+                      comments={internalComments}
+                      internal
+                    />
                   ) : null}
                 </div>
               </div>
@@ -408,15 +398,19 @@ export default function TicketDetailPage() {
                       required
                     />
                   </label>
-                  <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
-                    <input
-                      type="checkbox"
-                      checked={isInternal}
-                      onChange={(event) => setIsInternal(event.target.checked)}
-                      className="size-4 rounded border-gray-300"
-                    />
-                    Internal note
-                  </label>
+                  {canUseInternalComments ? (
+                    <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={isInternal}
+                        onChange={(event) =>
+                          setIsInternal(event.target.checked)
+                        }
+                        className="size-4 rounded border-gray-300"
+                      />
+                      Internal note
+                    </label>
+                  ) : null}
                   <button
                     type="submit"
                     disabled={saving}
@@ -431,6 +425,53 @@ export default function TicketDetailPage() {
         </>
       ) : null}
     </AppShell>
+  );
+}
+
+function CommentGroup({
+  title,
+  comments,
+  internal = false,
+}: {
+  title: string;
+  comments: Comment[];
+  internal?: boolean;
+}) {
+  return (
+    <section>
+      <h3 className="mb-3 text-sm font-bold uppercase text-gray-500">
+        {title}
+      </h3>
+      <div className="space-y-3">
+        {comments.map((comment) => (
+          <article
+            key={comment.id}
+            className={
+              internal
+                ? "rounded-lg border border-yellow-200 bg-yellow-50 p-4"
+                : "rounded-lg border border-gray-200 p-4"
+            }
+          >
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-dark">
+                {comment.user?.name ?? "Unknown user"}
+              </div>
+              <div className="text-xs text-gray-500">
+                {formatDate(comment.createdAt)}
+              </div>
+            </div>
+            <p className="text-sm leading-6 text-gray-700">
+              {comment.content}
+            </p>
+          </article>
+        ))}
+        {comments.length === 0 ? (
+          <div className="rounded-lg bg-gray-50 p-5 text-center text-sm text-gray-500">
+            No comments yet.
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
