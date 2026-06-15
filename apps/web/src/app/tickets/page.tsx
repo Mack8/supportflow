@@ -19,6 +19,8 @@ import {
   statusLabel,
 } from "@/lib/format";
 import type {
+  PaginatedResponse,
+  PaginationMeta,
   Ticket,
   TicketCategory,
   TicketPriority,
@@ -75,10 +77,12 @@ type TicketFilters = {
   overdueOnly: boolean;
 };
 
-function buildTicketsPath(filters: TicketFilters) {
+function buildTicketsPath(filters: TicketFilters, page: number, limit: number) {
   const params = new URLSearchParams();
   const search = filters.q.trim();
 
+  params.set("page", String(page));
+  params.set("limit", String(limit));
   if (search) params.set("q", search);
   if (filters.status !== "ALL") params.set("status", filters.status);
   if (filters.priority !== "ALL") params.set("priority", filters.priority);
@@ -96,12 +100,15 @@ function buildTicketsPath(filters: TicketFilters) {
 export default function TicketsPage() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [meta, setMeta] = useState<PaginationMeta | null>(null);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<TicketStatus | "ALL">("ALL");
   const [priority, setPriority] = useState<TicketPriority | "ALL">("ALL");
   const [category, setCategory] = useState<TicketCategory | "ALL">("ALL");
   const [assignee, setAssignee] = useState<AssigneeFilter>("ALL");
   const [overdueOnly, setOverdueOnly] = useState(false);
+  const [page, setPage] = useState(1);
+  const limit = 25;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -116,10 +123,13 @@ export default function TicketsPage() {
 
     try {
       const [ticketData, userData] = await Promise.all([
-        apiFetch<Ticket[]>(buildTicketsPath(filters)),
+        apiFetch<PaginatedResponse<Ticket>>(
+          buildTicketsPath(filters, page, limit),
+        ),
         apiFetch<User[]>("/users"),
       ]);
-      setTickets(ticketData);
+      setTickets(ticketData.data);
+      setMeta(ticketData.meta);
       setUsers(userData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load tickets");
@@ -134,12 +144,15 @@ export default function TicketsPage() {
     async function loadFilteredTickets() {
       try {
         const [ticketData, userData] = await Promise.all([
-          apiFetch<Ticket[]>(buildTicketsPath(filters)),
+          apiFetch<PaginatedResponse<Ticket>>(
+            buildTicketsPath(filters, page, limit),
+          ),
           apiFetch<User[]>("/users"),
         ]);
 
         if (!ignore) {
-          setTickets(ticketData);
+          setTickets(ticketData.data);
+          setMeta(ticketData.meta);
           setUsers(userData);
           setError(null);
         }
@@ -159,7 +172,7 @@ export default function TicketsPage() {
     return () => {
       ignore = true;
     };
-  }, [filters]);
+  }, [filters, page]);
 
   const metrics = useMemo(() => {
     const active = tickets.filter((ticket) => !isTicketClosed(ticket)).length;
@@ -174,8 +187,14 @@ export default function TicketsPage() {
     setLoading(true);
   }
 
+  function resetPageAndMarkLoading() {
+    setPage(1);
+    markLoading();
+  }
+
   function resetFilters() {
     markLoading();
+    setPage(1);
     setQ("");
     setStatus("ALL");
     setPriority("ALL");
@@ -239,7 +258,7 @@ export default function TicketsPage() {
             <input
               value={q}
               onChange={(event) => {
-                markLoading();
+                resetPageAndMarkLoading();
                 setQ(event.target.value);
               }}
               placeholder="Search tickets"
@@ -249,7 +268,7 @@ export default function TicketsPage() {
           <select
             value={status}
             onChange={(event) => {
-              markLoading();
+              resetPageAndMarkLoading();
               setStatus(event.target.value as TicketStatus | "ALL");
             }}
             className="h-10 rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
@@ -263,7 +282,7 @@ export default function TicketsPage() {
           <select
             value={priority}
             onChange={(event) => {
-              markLoading();
+              resetPageAndMarkLoading();
               setPriority(event.target.value as TicketPriority | "ALL");
             }}
             className="h-10 rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
@@ -277,7 +296,7 @@ export default function TicketsPage() {
           <select
             value={category}
             onChange={(event) => {
-              markLoading();
+              resetPageAndMarkLoading();
               setCategory(event.target.value as TicketCategory | "ALL");
             }}
             className="h-10 rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
@@ -291,7 +310,7 @@ export default function TicketsPage() {
           <select
             value={assignee}
             onChange={(event) => {
-              markLoading();
+              resetPageAndMarkLoading();
               setAssignee(event.target.value);
             }}
             className="h-10 rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
@@ -311,7 +330,7 @@ export default function TicketsPage() {
               type="checkbox"
               checked={overdueOnly}
               onChange={(event) => {
-                markLoading();
+                resetPageAndMarkLoading();
                 setOverdueOnly(event.target.checked);
               }}
               className="size-4 rounded border-gray-300"
@@ -327,7 +346,7 @@ export default function TicketsPage() {
           </button>
         </div>
         <div className="mt-3 text-sm font-medium text-gray-500">
-          {tickets.length} tickets in current view
+          {meta?.total ?? 0} tickets match the current filters
         </div>
       </section>
 
@@ -412,6 +431,41 @@ export default function TicketsPage() {
             </div>
           ) : null}
         </section>
+      ) : null}
+
+      {!loading && !error && meta ? (
+        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-gray-200 bg-white p-4 text-sm font-semibold text-gray-700 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            Page {meta.page} of {Math.max(meta.totalPages, 1)} - Showing{" "}
+            {tickets.length} of {meta.total}
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                markLoading();
+                setPage((current) => Math.max(current - 1, 1));
+              }}
+              disabled={meta.page <= 1}
+              className="h-9 rounded-md border border-gray-300 px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                markLoading();
+                setPage((current) =>
+                  Math.min(current + 1, Math.max(meta.totalPages, 1)),
+                );
+              }}
+              disabled={meta.page >= Math.max(meta.totalPages, 1)}
+              className="h-9 rounded-md border border-gray-300 px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
+        </div>
       ) : null}
     </AppShell>
   );

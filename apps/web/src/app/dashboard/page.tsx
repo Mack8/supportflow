@@ -7,7 +7,13 @@ import { LoadingState } from "@/components/ui/loading-state";
 import { PriorityBadge, StatusBadge } from "@/components/ui/badge";
 import { apiFetch } from "@/lib/api-client";
 import { formatDate, statusLabel } from "@/lib/format";
-import type { Comment, Ticket, TicketStatus, User } from "@/types/domain";
+import type {
+  Comment,
+  PaginatedResponse,
+  Ticket,
+  TicketStatus,
+  User,
+} from "@/types/domain";
 import { MessageSquare, TicketCheck, Timer, Users } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
@@ -36,12 +42,12 @@ export default function DashboardPage() {
     setError(null);
 
     try {
-      const [tickets, users, comments] = await Promise.all([
-        apiFetch<Ticket[]>("/tickets"),
+      const [ticketPage, users, comments] = await Promise.all([
+        apiFetch<PaginatedResponse<Ticket>>("/tickets?limit=100"),
         apiFetch<User[]>("/users"),
         apiFetch<Comment[]>("/comments"),
       ]);
-      setData({ tickets, users, comments });
+      setData({ tickets: ticketPage.data, users, comments });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load dashboard");
     } finally {
@@ -54,14 +60,14 @@ export default function DashboardPage() {
 
     async function loadInitialData() {
       try {
-        const [tickets, users, comments] = await Promise.all([
-          apiFetch<Ticket[]>("/tickets"),
+        const [ticketPage, users, comments] = await Promise.all([
+          apiFetch<PaginatedResponse<Ticket>>("/tickets?limit=100"),
           apiFetch<User[]>("/users"),
           apiFetch<Comment[]>("/comments"),
         ]);
 
         if (!ignore) {
-          setData({ tickets, users, comments });
+          setData({ tickets: ticketPage.data, users, comments });
         }
       } catch (err) {
         if (!ignore) {
