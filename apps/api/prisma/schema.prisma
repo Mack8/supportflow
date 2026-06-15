@@ -1,11 +1,7 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
 }
 
 datasource db {
@@ -33,35 +29,54 @@ enum TicketPriority {
   URGENT
 }
 
+enum TicketCategory {
+  GENERAL
+  TECHNICAL
+  BILLING
+  ACCOUNT
+  FEATURE_REQUEST
+  INCIDENT
+}
+
 model User {
-  id           String    @id @default(uuid())
-  name         String
-  email        String    @unique
-  passwordHash String
-  role         Role      @default(USER)
-  isActive     Boolean   @default(true)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id              String    @id @default(uuid())
+  name            String
+  email           String    @unique
+  passwordHash    String
+  role            Role      @default(USER)
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
   createdTickets  Ticket[]  @relation("CreatedTickets")
   assignedTickets Ticket[]  @relation("AssignedTickets")
   comments        Comment[]
 }
 
 model Ticket {
-  id           String         @id @default(uuid())
-  title        String
-  description  String
-  status       TicketStatus   @default(OPEN)
-  priority     TicketPriority @default(MEDIUM)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  closedAt     DateTime?
-  createdById  String
-  assignedToId String?
-
+  id                 String         @id @default(uuid())
+  title              String
+  description        String
+  status             TicketStatus   @default(OPEN)
+  priority           TicketPriority @default(MEDIUM)
+  category           TicketCategory @default(GENERAL)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  dueAt              DateTime?
+  lastStatusChangeAt DateTime       @default(now())
+  resolvedAt         DateTime?
+  closedAt           DateTime?
+  resolution         String?
+  createdById        String
+  assignedToId       String?
   createdBy  User      @relation("CreatedTickets", fields: [createdById], references: [id])
   assignedTo User?     @relation("AssignedTickets", fields: [assignedToId], references: [id])
   comments   Comment[]
+
+  @@index([status, priority])
+  @@index([category])
+  @@index([assignedToId])
+  @@index([createdById])
+  @@index([dueAt])
 }
 
 model Comment {
@@ -71,7 +86,6 @@ model Comment {
   createdAt  DateTime @default(now())
   ticketId   String
   userId     String
-
-  ticket     Ticket   @relation(fields: [ticketId], references: [id])
-  user       User     @relation(fields: [userId], references: [id])
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
 }

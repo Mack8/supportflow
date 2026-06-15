@@ -1,0 +1,572 @@
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  Prisma,
+  type Ticket,
+} from '../../generated/prisma/client.js';
+import {
+  TicketCategory,
+  TicketPriority,
+  Role,
+  TicketStatus,
+} from '../../generated/prisma/enums.js';
+import { areAuthGuardsDisabled } from '../auth/auth.config';
+import type { AuthenticatedUser } from '../auth/types/authenticated-user.type';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreateTicketDto } from './dto/create-ticket.dto';
+import { FindTicketsQueryDto } from './dto/find-tickets-query.dto';
+import { UpdateTicketDto } from './dto/update-ticket.dto';
+
+@Injectable()
+export class TicketsService {
+  private readonly defaultPage = 1;
+  private readonly defaultPageLimit = 25;
+  private readonly activeStatuses = [
+    TicketStatus.OPEN,
+    TicketStatus.IN_PROGRESS,
+    TicketStatus.WAITING_USER,
+  ];
+  private readonly ticketStatuses = [
+    TicketStatus.OPEN,
+    TicketStatus.IN_PROGRESS,
+    TicketStatus.WAITING_USER,
+    TicketStatus.RESOLVED,
+    TicketStatus.CLOSED,
+  ];
+  private readonly allowedStatusTransitions: Record<
+    TicketStatus,
+    TicketStatus[]
+  > = {
+    [TicketStatus.OPEN]: [
+      TicketStatus.IN_PROGRESS,
+      TicketStatus.WAITING_USER,
+      TicketStatus.RESOLVED,
+    ],
+    [TicketStatus.IN_PROGRESS]: [
+      TicketStatus.WAITING_USER,
+      TicketStatus.RESOLVED,
+    ],
+    [TicketStatus.WAITING_USER]: [
+      TicketStatus.IN_PROGRESS,
+      TicketStatus.RESOLVED,
+    ],
+    [TicketStatus.RESOLVED]: [TicketStatus.IN_PROGRESS, TicketStatus.CLOSED],
+    [TicketStatus.CLOSED]: [],
+  };
+
+  private readonly safeUserSelect = {
+    id: true,
+    name: true,
+    email: true,
+    role: true,
+    isActive: true,
+  } satisfies Prisma.UserSelect;
+
+  private readonly ticketSelect = {
+    id: true,
+    title: true,
+    description: true,
+    status: true,
+    priority: true,
+    category: true,
+    createdAt: true,
+    updatedAt: true,
+    dueAt: true,
+    lastStatusChangeAt: true,
+    resolvedAt: true,
+    closedAt: true,
+    resolution: true,
+    createdById: true,
+    assignedToId: true,
+    createdBy: { select: this.safeUserSelect },
+    assignedTo: { select: this.safeUserSelect },
+    _count: { select: { comments: true } },
+  } satisfies Prisma.TicketSelect;
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  async create(createTicketDto: CreateTicketDto, user: AuthenticatedUser) {
+    const createdById = this.resolveActorId(user, createTicketDto.createdById);
+    const category = createTicketDto.category ?? TicketCategory.GENERAL;
+    const priority = this.resolvePriority(category);
+
+    try {
+      return await this.prisma.ticket.create({
+        data: {
+          title: createTicketDto.title.trim(),
+          description: createTicketDto.description.trim(),
+          priority,
+          category,
+          dueAt: this.resolveDueAt(priority),
+          createdById,
+        },
+        select: this.ticketSelect,
+      });
+    } catch (error) {
+      this.handlePrismaWriteError(error);
+    }
+  }
+
+  async findAll(query: FindTicketsQueryDto, user: AuthenticatedUser) {
+    const where = this.buildWhere(query, user);
+    const { page, skip, take } = this.resolvePagination(query);
+    const [total, data] = await this.prisma.$transaction([
+      this.prisma.ticket.count({ where }),
+      this.prisma.ticket.findMany({
+        where,
+        skip,
+        take,
+        select: this.ticketSelect,
+        orderBy: [
+          { priority: 'desc' },
+          { dueAt: 'asc' },
+          { createdAt: 'desc' },
+        ],
+      }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        page,
+        limit: take,
+        total,
+        totalPages: Math.ceil(total / take),
+      },
+    };
+  }
+
+  async getStats(user: AuthenticatedUser) {
+    const where = this.buildTicketVisibilityWhere({}, user);
+    const activeWhere = this.mergeWhere(where, {
+      status: { in: this.activeStatuses },
+    });
+    const [
+      total,
+      active,
+      urgent,
+      overdue,
+      unassigned,
+      ...statusCounts
+    ] = await this.prisma.$transaction([
+      this.prisma.ticket.count({ where }),
+      this.prisma.ticket.count({ where: activeWhere }),
+      this.prisma.ticket.count({
+        where: this.mergeWhere(where, { priority: TicketPriority.URGENT }),
+      }),
+      this.prisma.ticket.count({
+        where: this.mergeWhere(activeWhere, { dueAt: { lt: new Date() } }),
+      }),
+      this.prisma.ticket.count({
+        where: this.mergeWhere(where, { assignedToId: null }),
+      }),
+      ...this.ticketStatuses.map((status) =>
+        this.prisma.ticket.count({
+          where: this.mergeWhere(where, { status }),
+        }),
+      ),
+    ]);
+
+    return {
+      total,
+      active,
+      urgent,
+      overdue,
+      unassigned,
+      byStatus: Object.fromEntries(
+        this.ticketStatuses.map((status, index) => [
+          status,
+          statusCounts[index] ?? 0,
+        ]),
+      ) as Record<TicketStatus, number>,
+    };
+  }
+
+  async findOne(id: string, user: AuthenticatedUser) {
+    const ticket = await this.prisma.ticket.findFirst({
+      where: this.buildTicketVisibilityWhere({ id }, user),
+      select: this.ticketSelect,
+    });
+
+    if (!ticket) {
+      throw new NotFoundException('Ticket not found');
+    }
+
+    return ticket;
+  }
+
+  async update(
+    id: string,
+    updateTicketDto: UpdateTicketDto,
+    user: AuthenticatedUser,
+  ) {
+    this.ensureCanManageTickets(user);
+
+    const currentTicket = await this.ensureTicketExists(id);
+    this.ensureValidStatusTransition(
+      currentTicket.status,
+      updateTicketDto.status,
+    );
+
+    const statusChanged =
+      updateTicketDto.status !== undefined &&
+      updateTicketDto.status !== currentTicket.status;
+    const resolutionClearRequested = this.isResolutionClearRequested(
+      updateTicketDto.resolution,
+    );
+    const priority = updateTicketDto.priority
+      ?? (updateTicketDto.category
+        ? this.resolvePriority(updateTicketDto.category)
+        : undefined);
+    const resolution = this.resolveResolution(
+      updateTicketDto.resolution,
+      currentTicket.resolution,
+    );
+
+    this.ensureTerminalStatusHasResolution(
+      updateTicketDto.status ?? currentTicket.status,
+      resolution,
+    );
+
+    try {
+      return await this.prisma.ticket.update({
+        where: { id },
+        data: {
+          title: updateTicketDto.title?.trim(),
+          description: updateTicketDto.description?.trim(),
+          status: updateTicketDto.status,
+          priority,
+          category: updateTicketDto.category,
+          dueAt: this.parseNullableDate(updateTicketDto.dueAt),
+          resolution,
+          assignedToId: updateTicketDto.assignedToId,
+          lastStatusChangeAt: statusChanged ? new Date() : undefined,
+          resolvedAt: this.resolveResolvedAt(
+            updateTicketDto.status,
+            currentTicket.status,
+            currentTicket.resolvedAt,
+            resolutionClearRequested,
+          ),
+          closedAt: this.resolveClosedAt(
+            updateTicketDto.status,
+            currentTicket.status,
+            currentTicket.closedAt,
+            resolutionClearRequested,
+          ),
+        },
+        select: this.ticketSelect,
+      });
+    } catch (error) {
+      this.handlePrismaWriteError(error);
+    }
+  }
+
+  async remove(id: string, user: AuthenticatedUser): Promise<Ticket> {
+    this.ensureCanManageTickets(user);
+
+    await this.ensureTicketExists(id);
+
+    try {
+      return await this.prisma.ticket.delete({
+        where: { id },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2003'
+      ) {
+        throw new ConflictException(
+          'Ticket has comments and cannot be deleted',
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  private resolveActorId(
+    user: AuthenticatedUser,
+    fallbackUserId?: string,
+  ): string {
+    if (areAuthGuardsDisabled()) {
+      if (!fallbackUserId) {
+        throw new BadRequestException(
+          'createdById is required when auth guards are disabled',
+        );
+      }
+
+      return fallbackUserId;
+    }
+
+    if (fallbackUserId && this.canManageTickets(user.role)) {
+      return fallbackUserId;
+    }
+
+    return user.id;
+  }
+
+  private canManageTickets(role: Role): boolean {
+    return role === Role.ADMIN || role === Role.AGENT;
+  }
+
+  private ensureCanManageTickets(user: AuthenticatedUser): void {
+    if (!this.canManageTickets(user.role)) {
+      throw new ForbiddenException('Support role required to manage tickets');
+    }
+  }
+
+  private resolvePriority(category: TicketCategory): TicketPriority {
+    const priorities: Record<TicketCategory, TicketPriority> = {
+      [TicketCategory.INCIDENT]: TicketPriority.URGENT,
+      [TicketCategory.TECHNICAL]: TicketPriority.HIGH,
+      [TicketCategory.BILLING]: TicketPriority.MEDIUM,
+      [TicketCategory.ACCOUNT]: TicketPriority.MEDIUM,
+      [TicketCategory.GENERAL]: TicketPriority.MEDIUM,
+      [TicketCategory.FEATURE_REQUEST]: TicketPriority.LOW,
+    };
+
+    return priorities[category];
+  }
+
+  private resolveDueAt(priority: TicketPriority): Date {
+    const hoursByPriority: Record<TicketPriority, number> = {
+      [TicketPriority.URGENT]: 4,
+      [TicketPriority.HIGH]: 24,
+      [TicketPriority.MEDIUM]: 48,
+      [TicketPriority.LOW]: 120,
+    };
+
+    return new Date(Date.now() + hoursByPriority[priority] * 60 * 60 * 1000);
+  }
+
+  private buildWhere(
+    query: FindTicketsQueryDto,
+    user: AuthenticatedUser,
+  ): Prisma.TicketWhereInput {
+    const where: Prisma.TicketWhereInput = {
+      status: query.status,
+      priority: query.priority,
+      category: query.category,
+      createdById: this.canManageTickets(user.role)
+        ? query.createdById
+        : user.id,
+    };
+
+    if (query.assignedToId) {
+      where.assignedToId = query.assignedToId;
+    }
+
+    if (query.unassigned === 'true') {
+      where.assignedToId = null;
+    }
+
+    if (query.overdue === 'true') {
+      where.dueAt = { lt: new Date() };
+      if (!query.status) {
+        where.status = { notIn: [TicketStatus.RESOLVED, TicketStatus.CLOSED] };
+      }
+    }
+
+    const search = query.q?.trim();
+    if (search) {
+      where.OR = [
+        { title: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+        { resolution: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    return where;
+  }
+
+  private buildTicketVisibilityWhere(
+    where: Prisma.TicketWhereInput,
+    user: AuthenticatedUser,
+  ): Prisma.TicketWhereInput {
+    if (this.canManageTickets(user.role)) {
+      return where;
+    }
+
+    return {
+      ...where,
+      createdById: user.id,
+    };
+  }
+
+  private mergeWhere(
+    base: Prisma.TicketWhereInput,
+    next: Prisma.TicketWhereInput,
+  ): Prisma.TicketWhereInput {
+    return {
+      ...base,
+      ...next,
+    };
+  }
+
+  private resolvePagination(query: FindTicketsQueryDto) {
+    const page = query.page ?? this.defaultPage;
+    const limit = query.limit ?? this.defaultPageLimit;
+
+    return {
+      page,
+      skip: (page - 1) * limit,
+      take: limit,
+    };
+  }
+
+  private parseDate(value?: string): Date | undefined {
+    return value ? new Date(value) : undefined;
+  }
+
+  private parseNullableDate(value?: string | null): Date | null | undefined {
+    if (value === null) {
+      return null;
+    }
+
+    return this.parseDate(value);
+  }
+
+  private trimNullable(value?: string | null): string | null | undefined {
+    if (value === null) {
+      return null;
+    }
+
+    const trimmed = value?.trim();
+    return trimmed ? trimmed : undefined;
+  }
+
+  private resolveResolution(
+    value: string | null | undefined,
+    currentResolution: string | null,
+  ): string | null {
+    if (this.isResolutionClearRequested(value)) {
+      return null;
+    }
+
+    const resolution = this.trimNullable(value);
+
+    if (resolution === undefined) {
+      return currentResolution;
+    }
+
+    return resolution;
+  }
+
+  private isResolutionClearRequested(value: string | null | undefined): boolean {
+    return value === null || value?.trim() === '';
+  }
+
+  private ensureValidStatusTransition(
+    currentStatus: TicketStatus,
+    nextStatus: TicketStatus | undefined,
+  ): void {
+    if (!nextStatus || nextStatus === currentStatus) {
+      return;
+    }
+
+    if (!this.allowedStatusTransitions[currentStatus].includes(nextStatus)) {
+      throw new BadRequestException(
+        `Invalid ticket status transition from ${currentStatus} to ${nextStatus}`,
+      );
+    }
+  }
+
+  private ensureTerminalStatusHasResolution(
+    status: TicketStatus,
+    resolution: string | null,
+  ): void {
+    if (
+      (status === TicketStatus.RESOLVED || status === TicketStatus.CLOSED) &&
+      !resolution
+    ) {
+      throw new BadRequestException(
+        'Resolution is required before resolving or closing a ticket',
+      );
+    }
+  }
+
+  private resolveResolvedAt(
+    status: TicketStatus | undefined,
+    currentStatus: TicketStatus,
+    currentResolvedAt: Date | null,
+    resolutionClearRequested: boolean,
+  ): Date | null | undefined {
+    if (!status) {
+      return undefined;
+    }
+
+    if (status === TicketStatus.RESOLVED || status === TicketStatus.CLOSED) {
+      return currentResolvedAt ?? new Date();
+    }
+
+    if (
+      currentStatus === TicketStatus.RESOLVED &&
+      status === TicketStatus.IN_PROGRESS &&
+      !resolutionClearRequested
+    ) {
+      return undefined;
+    }
+
+    return null;
+  }
+
+  private resolveClosedAt(
+    status: TicketStatus | undefined,
+    currentStatus: TicketStatus,
+    currentClosedAt: Date | null,
+    resolutionClearRequested: boolean,
+  ): Date | null | undefined {
+    if (!status) {
+      return undefined;
+    }
+
+    if (status === TicketStatus.CLOSED) {
+      return currentClosedAt ?? new Date();
+    }
+
+    if (
+      currentStatus === TicketStatus.RESOLVED &&
+      status === TicketStatus.IN_PROGRESS &&
+      !resolutionClearRequested
+    ) {
+      return undefined;
+    }
+
+    return null;
+  }
+
+  private async ensureTicketExists(id: string) {
+    const ticket = await this.prisma.ticket.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        resolvedAt: true,
+        closedAt: true,
+        resolution: true,
+      },
+    });
+
+    if (!ticket) {
+      throw new NotFoundException('Ticket not found');
+    }
+
+    return ticket;
+  }
+
+  private handlePrismaWriteError(error: unknown): never {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2003'
+    ) {
+      throw new BadRequestException('Invalid user reference');
+    }
+
+    throw error;
+  }
+}
