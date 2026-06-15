@@ -130,6 +130,15 @@ export class TicketsService {
       ?? (updateTicketDto.category
         ? this.resolvePriority(updateTicketDto.category)
         : undefined);
+    const resolution = this.resolveResolution(
+      updateTicketDto.resolution,
+      currentTicket.resolution,
+    );
+
+    this.ensureTerminalStatusHasResolution(
+      updateTicketDto.status ?? currentTicket.status,
+      resolution,
+    );
 
     try {
       return await this.prisma.ticket.update({
@@ -141,7 +150,7 @@ export class TicketsService {
           priority,
           category: updateTicketDto.category,
           dueAt: this.parseNullableDate(updateTicketDto.dueAt),
-          resolution: this.trimNullable(updateTicketDto.resolution),
+          resolution,
           assignedToId: updateTicketDto.assignedToId,
           lastStatusChangeAt: statusChanged ? new Date() : undefined,
           resolvedAt: this.resolveResolvedAt(
@@ -297,6 +306,33 @@ export class TicketsService {
     return trimmed ? trimmed : undefined;
   }
 
+  private resolveResolution(
+    value: string | null | undefined,
+    currentResolution: string | null,
+  ): string | null {
+    const resolution = this.trimNullable(value);
+
+    if (resolution === undefined) {
+      return currentResolution;
+    }
+
+    return resolution;
+  }
+
+  private ensureTerminalStatusHasResolution(
+    status: TicketStatus,
+    resolution: string | null,
+  ): void {
+    if (
+      (status === TicketStatus.RESOLVED || status === TicketStatus.CLOSED) &&
+      !resolution
+    ) {
+      throw new BadRequestException(
+        'Resolution is required before resolving or closing a ticket',
+      );
+    }
+  }
+
   private resolveResolvedAt(
     status: TicketStatus | undefined,
     currentResolvedAt: Date | null,
@@ -331,6 +367,7 @@ export class TicketsService {
         status: true,
         resolvedAt: true,
         closedAt: true,
+        resolution: true,
       },
     });
 
