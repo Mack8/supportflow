@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client.js';
+import { Role } from '../../generated/prisma/enums.js';
 import { areAuthGuardsDisabled } from '../auth/auth.config';
 import type { AuthenticatedUser } from '../auth/types/authenticated-user.type';
 import { PrismaService } from '../prisma/prisma.service';
@@ -42,6 +44,8 @@ export class CommentsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(createCommentDto: CreateCommentDto, user: AuthenticatedUser) {
+    this.ensureInternalCommentAllowed(createCommentDto.isInternal, user);
+
     const userId = this.resolveActorId(user, createCommentDto.userId);
 
     try {
@@ -59,18 +63,19 @@ export class CommentsService {
     }
   }
 
-  async findAll(query: FindCommentsQueryDto) {
+  async findAll(query: FindCommentsQueryDto, user: AuthenticatedUser) {
     return this.prisma.comment.findMany({
       where: {
         ticketId: query.ticketId,
         userId: query.userId,
+        isInternal: this.canUseInternalComments(user) ? undefined : false,
       },
       select: this.commentSelect,
       orderBy: { createdAt: 'asc' },
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, user: AuthenticatedUser) {
     const comment = await this.prisma.comment.findUnique({
       where: { id },
       select: this.commentSelect,
@@ -80,11 +85,21 @@ export class CommentsService {
       throw new NotFoundException('Comment not found');
     }
 
+    this.ensureCommentVisible(comment.isInternal, user);
+
     return comment;
   }
 
-  async update(id: string, updateCommentDto: UpdateCommentDto) {
-    await this.ensureCommentExists(id);
+  async update(
+    id: string,
+    updateCommentDto: UpdateCommentDto,
+    user: AuthenticatedUser,
+  ) {
+    const currentComment = await this.ensureCommentExists(id);
+
+    if (currentComment.isInternal || updateCommentDto.isInternal) {
+      this.ensureInternalCommentAllowed(true, user);
+    }
 
     return this.prisma.comment.update({
       where: { id },
@@ -96,8 +111,12 @@ export class CommentsService {
     });
   }
 
-  async remove(id: string) {
-    await this.ensureCommentExists(id);
+  async remove(id: string, user: AuthenticatedUser) {
+    const currentComment = await this.ensureCommentExists(id);
+
+    if (currentComment.isInternal) {
+      this.ensureInternalCommentAllowed(true, user);
+    }
 
     return this.prisma.comment.delete({
       where: { id },
@@ -121,15 +140,39 @@ export class CommentsService {
     return user.id;
   }
 
-  private async ensureCommentExists(id: string): Promise<void> {
+  private canUseInternalComments(user: AuthenticatedUser): boolean {
+    return user.role === Role.ADMIN || user.role === Role.AGENT;
+  }
+
+  private ensureInternalCommentAllowed(
+    isInternal: boolean | undefined,
+    user: AuthenticatedUser,
+  ): void {
+    if (isInternal && !this.canUseInternalComments(user)) {
+      throw new ForbiddenException('Internal comments require a support role');
+    }
+  }
+
+  private ensureCommentVisible(
+    isInternal: boolean,
+    user: AuthenticatedUser,
+  ): void {
+    if (isInternal && !this.canUseInternalComments(user)) {
+      throw new NotFoundException('Comment not found');
+    }
+  }
+
+  private async ensureCommentExists(id: string) {
     const comment = await this.prisma.comment.findUnique({
       where: { id },
-      select: { id: true },
+      select: { id: true, isInternal: true },
     });
 
     if (!comment) {
       throw new NotFoundException('Comment not found');
     }
+
+    return comment;
   }
 
   private handlePrismaWriteError(error: unknown): never {

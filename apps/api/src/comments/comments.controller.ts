@@ -32,25 +32,35 @@ export class CommentsController {
   }
 
   @Get()
-  findAll(@Query() query: FindCommentsQueryDto) {
-    return this.commentsService.findAll(query);
+  findAll(
+    @Query() query: FindCommentsQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.commentsService.findAll(query, user);
   }
 
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.commentsService.findOne(id);
+  findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.commentsService.findOne(id, user);
   }
 
   @Patch(':id')
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateCommentDto: UpdateCommentDto,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.commentsService.update(id, updateCommentDto);
+    return this.commentsService.update(id, updateCommentDto, user);
   }
 
   @Delete(':id')
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.commentsService.remove(id);
+  remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.commentsService.remove(id, user);
   }
 }
