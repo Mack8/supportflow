@@ -110,6 +110,9 @@ export default function TicketsPage() {
   const [page, setPage] = useState(1);
   const limit = 25;
   const [loading, setLoading] = useState(true);
+  const [savingAssignmentId, setSavingAssignmentId] = useState<string | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
 
   const filters = useMemo(
@@ -201,6 +204,28 @@ export default function TicketsPage() {
     setCategory("ALL");
     setAssignee("ALL");
     setOverdueOnly(false);
+  }
+
+  async function assignTicket(ticketId: string, assignedToId: string) {
+    setSavingAssignmentId(ticketId);
+    setError(null);
+
+    try {
+      const updated = await apiFetch<Ticket>(`/tickets/${ticketId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          assignedToId: assignedToId || null,
+        }),
+      });
+
+      setTickets((current) =>
+        current.map((ticket) => (ticket.id === ticketId ? updated : ticket)),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not assign ticket");
+    } finally {
+      setSavingAssignmentId(null);
+    }
   }
 
   return (
@@ -400,7 +425,25 @@ export default function TicketsPage() {
                         {ticket.createdBy?.name ?? "-"}
                       </td>
                       <td className="px-4 py-4 text-gray-600">
-                        {ticket.assignedTo?.name ?? "Unassigned"}
+                        <select
+                          value={ticket.assignedToId ?? ""}
+                          onChange={(event) =>
+                            assignTicket(ticket.id, event.target.value)
+                          }
+                          disabled={savingAssignmentId === ticket.id}
+                          className="h-9 min-w-[170px] rounded-md border border-gray-300 px-2 text-sm outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <option value="">Unassigned</option>
+                          {users
+                            .filter(
+                              (user) => user.role !== "USER" && user.isActive,
+                            )
+                            .map((user) => (
+                              <option key={user.id} value={user.id}>
+                                {user.name}
+                              </option>
+                            ))}
+                        </select>
                       </td>
                       <td className="px-4 py-4">
                         <span
