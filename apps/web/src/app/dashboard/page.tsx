@@ -20,8 +20,9 @@ import { useEffect, useMemo, useState } from "react";
 
 type DashboardData = {
   tickets: Ticket[];
-  users: User[];
   comments: Comment[];
+  currentUser: User;
+  userCount?: number;
 };
 
 const statuses: TicketStatus[] = [
@@ -37,17 +38,30 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  async function fetchDashboardData(): Promise<DashboardData> {
+    const currentUser = await apiFetch<User>("/auth/me");
+    const [ticketPage, comments, users] = await Promise.all([
+      apiFetch<PaginatedResponse<Ticket>>("/tickets?limit=100"),
+      apiFetch<Comment[]>("/comments"),
+      currentUser.role === "ADMIN"
+        ? apiFetch<User[]>("/users")
+        : Promise.resolve([] as User[]),
+    ]);
+
+    return {
+      tickets: ticketPage.data,
+      comments,
+      currentUser,
+      userCount: currentUser.role === "ADMIN" ? users.length : undefined,
+    };
+  }
+
   async function loadData() {
     setLoading(true);
     setError(null);
 
     try {
-      const [ticketPage, users, comments] = await Promise.all([
-        apiFetch<PaginatedResponse<Ticket>>("/tickets?limit=100"),
-        apiFetch<User[]>("/users"),
-        apiFetch<Comment[]>("/comments"),
-      ]);
-      setData({ tickets: ticketPage.data, users, comments });
+      setData(await fetchDashboardData());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load dashboard");
     } finally {
@@ -60,14 +74,10 @@ export default function DashboardPage() {
 
     async function loadInitialData() {
       try {
-        const [ticketPage, users, comments] = await Promise.all([
-          apiFetch<PaginatedResponse<Ticket>>("/tickets?limit=100"),
-          apiFetch<User[]>("/users"),
-          apiFetch<Comment[]>("/comments"),
-        ]);
+        const dashboardData = await fetchDashboardData();
 
         if (!ignore) {
-          setData({ tickets: ticketPage.data, users, comments });
+          setData(dashboardData);
         }
       } catch (err) {
         if (!ignore) {
@@ -99,12 +109,17 @@ export default function DashboardPage() {
       urgent: tickets.filter((ticket) => ticket.priority === "URGENT").length,
     };
   }, [data]);
+  const isCustomerView = data?.currentUser.role === "USER";
 
   return (
     <AppShell>
       <PageHeading
         title="Dashboard"
-        description="Operational view of tickets, workload and recent support activity."
+        description={
+          isCustomerView
+            ? "Review your support requests and recent ticket activity."
+            : "Operational view of tickets, workload and recent support activity."
+        }
         action={
           <Link
             href="/tickets/new"
@@ -122,7 +137,7 @@ export default function DashboardPage() {
         <div className="space-y-6">
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard
-              label="Total tickets"
+              label={isCustomerView ? "My tickets" : "Total tickets"}
               value={data.tickets.length}
               icon={<TicketCheck size={22} />}
             />
@@ -131,13 +146,21 @@ export default function DashboardPage() {
               value={summary.active}
               icon={<Timer size={22} />}
             />
+            {data.userCount !== undefined ? (
+              <MetricCard
+                label="Users"
+                value={data.userCount}
+                icon={<Users size={22} />}
+              />
+            ) : (
+              <MetricCard
+                label="Urgent"
+                value={summary.urgent}
+                icon={<Timer size={22} />}
+              />
+            )}
             <MetricCard
-              label="Users"
-              value={data.users.length}
-              icon={<Users size={22} />}
-            />
-            <MetricCard
-              label="Comments"
+              label={isCustomerView ? "Public updates" : "Comments"}
               value={data.comments.length}
               icon={<MessageSquare size={22} />}
             />
@@ -145,7 +168,9 @@ export default function DashboardPage() {
 
           <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
             <section className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-              <h2 className="mb-4 text-lg font-bold text-dark">Recent tickets</h2>
+              <h2 className="mb-4 text-lg font-bold text-dark">
+                {isCustomerView ? "My recent tickets" : "Recent tickets"}
+              </h2>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[780px] text-left text-sm">
                   <thead className="border-b border-gray-200 text-xs uppercase text-gray-500">
@@ -153,7 +178,9 @@ export default function DashboardPage() {
                       <th className="px-3 py-3">Title</th>
                       <th className="px-3 py-3">Status</th>
                       <th className="px-3 py-3">Priority</th>
-                      <th className="px-3 py-3">Requester</th>
+                      {!isCustomerView ? (
+                        <th className="px-3 py-3">Requester</th>
+                      ) : null}
                       <th className="px-3 py-3">Created</th>
                     </tr>
                   </thead>
@@ -174,9 +201,11 @@ export default function DashboardPage() {
                         <td className="px-3 py-4">
                           <PriorityBadge priority={ticket.priority} />
                         </td>
-                        <td className="px-3 py-4 text-gray-600">
-                          {ticket.createdBy?.name ?? "-"}
-                        </td>
+                        {!isCustomerView ? (
+                          <td className="px-3 py-4 text-gray-600">
+                            {ticket.createdBy?.name ?? "-"}
+                          </td>
+                        ) : null}
                         <td className="px-3 py-4 text-gray-600">
                           {formatDate(ticket.createdAt)}
                         </td>
@@ -184,6 +213,11 @@ export default function DashboardPage() {
                     ))}
                   </tbody>
                 </table>
+                {data.tickets.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-gray-500">
+                    No tickets to show yet.
+                  </div>
+                ) : null}
               </div>
             </section>
 

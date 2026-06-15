@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/badge";
 import { ErrorState } from "@/components/ui/error-state";
 import { LoadingState } from "@/components/ui/loading-state";
-import { apiFetch, getStoredUser } from "@/lib/api-client";
+import { apiFetch } from "@/lib/api-client";
 import {
   categoryLabel,
   formatDate,
@@ -55,6 +55,8 @@ export default function TicketDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const canUseInternalComments =
     currentUser?.role === "ADMIN" || currentUser?.role === "AGENT";
+  const canManageTicket = canUseInternalComments;
+  const canAssignTicket = currentUser?.role === "ADMIN";
   const publicComments = comments.filter((comment) => !comment.isInternal);
   const internalComments = comments.filter((comment) => comment.isInternal);
 
@@ -66,22 +68,36 @@ export default function TicketDetailPage() {
     setResolution(ticketData.resolution ?? "");
   }, []);
 
+  const fetchTicketData = useCallback(async () => {
+    const sessionUser = await apiFetch<User>("/auth/me");
+    const [ticketData, commentData, userData] = await Promise.all([
+      apiFetch<Ticket>(`/tickets/${ticketId}`),
+      apiFetch<Comment[]>(`/comments?ticketId=${ticketId}`),
+      sessionUser.role === "ADMIN"
+        ? apiFetch<User[]>("/users")
+        : Promise.resolve([] as User[]),
+    ]);
+
+    return { sessionUser, ticketData, commentData, userData };
+  }, [ticketId]);
+
   async function loadData() {
     setLoading(true);
     setError(null);
 
     try {
-      const [ticketData, commentData, userData] = await Promise.all([
-        apiFetch<Ticket>(`/tickets/${ticketId}`),
-        apiFetch<Comment[]>(`/comments?ticketId=${ticketId}`),
-        apiFetch<User[]>("/users"),
-      ]);
+      const { sessionUser, ticketData, commentData, userData } =
+        await fetchTicketData();
       setTicket(ticketData);
       setComments(commentData);
       setUsers(userData);
-      setCurrentUser(getStoredUser());
+      setCurrentUser(sessionUser);
       syncTicketForm(ticketData);
-      setUserId(ticketData.createdById);
+      setUserId(
+        sessionUser.id === "local-dev-admin"
+          ? ticketData.createdById
+          : sessionUser.id,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load ticket");
     } finally {
@@ -94,19 +110,20 @@ export default function TicketDetailPage() {
 
     async function loadInitialData() {
       try {
-        const [ticketData, commentData, userData] = await Promise.all([
-          apiFetch<Ticket>(`/tickets/${ticketId}`),
-          apiFetch<Comment[]>(`/comments?ticketId=${ticketId}`),
-          apiFetch<User[]>("/users"),
-        ]);
+        const { sessionUser, ticketData, commentData, userData } =
+          await fetchTicketData();
 
         if (!ignore) {
           setTicket(ticketData);
           setComments(commentData);
           setUsers(userData);
-          setCurrentUser(getStoredUser());
+          setCurrentUser(sessionUser);
           syncTicketForm(ticketData);
-          setUserId(ticketData.createdById);
+          setUserId(
+            sessionUser.id === "local-dev-admin"
+              ? ticketData.createdById
+              : sessionUser.id,
+          );
         }
       } catch (err) {
         if (!ignore) {
@@ -124,7 +141,7 @@ export default function TicketDetailPage() {
     return () => {
       ignore = true;
     };
-  }, [syncTicketForm, ticketId]);
+  }, [fetchTicketData, syncTicketForm]);
 
   async function updateTicket(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -132,15 +149,26 @@ export default function TicketDetailPage() {
     setError(null);
 
     try {
+      const payload: {
+        status: TicketStatus;
+        category: TicketCategory;
+        dueAt: string | null;
+        resolution: string | null;
+        assignedToId?: string | null;
+      } = {
+        status,
+        category,
+        dueAt: dueAt ? (toIsoFromDateInput(dueAt) ?? null) : null,
+        resolution: resolution.trim() || null,
+      };
+
+      if (canAssignTicket) {
+        payload.assignedToId = assignedToId || null;
+      }
+
       const updated = await apiFetch<Ticket>(`/tickets/${ticketId}`, {
         method: "PATCH",
-        body: JSON.stringify({
-          status,
-          category,
-          dueAt: dueAt ? toIsoFromDateInput(dueAt) : null,
-          resolution: resolution.trim() || null,
-          assignedToId: assignedToId || null,
-        }),
+        body: JSON.stringify(payload),
       });
       setTicket(updated);
       syncTicketForm(updated);
@@ -267,101 +295,127 @@ export default function TicketDetailPage() {
             </section>
 
             <aside className="space-y-5">
-              <form
-                onSubmit={updateTicket}
-                className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm"
-              >
-                <h2 className="mb-4 text-lg font-bold">Update ticket</h2>
-                <div className="space-y-4">
-                  <label className="block">
-                    <span className="mb-1 block text-sm font-semibold text-gray-700">
-                      Status
-                    </span>
-                    <select
-                      value={status}
-                      onChange={(event) =>
-                        setStatus(event.target.value as TicketStatus)
-                      }
-                      className="h-11 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
-                    >
-                      {Object.entries(statusLabel).map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-1">
+              {canManageTicket ? (
+                <form
+                  onSubmit={updateTicket}
+                  className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm"
+                >
+                  <h2 className="mb-4 text-lg font-bold">Update ticket</h2>
+                  <div className="space-y-4">
                     <label className="block">
                       <span className="mb-1 block text-sm font-semibold text-gray-700">
-                        Category
+                        Status
                       </span>
                       <select
-                        value={category}
+                        value={status}
                         onChange={(event) =>
-                          setCategory(event.target.value as TicketCategory)
+                          setStatus(event.target.value as TicketStatus)
                         }
                         className="h-11 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
                       >
-                        {Object.entries(categoryLabel).map(([value, label]) => (
+                        {Object.entries(statusLabel).map(([value, label]) => (
                           <option key={value} value={value}>
                             {label}
                           </option>
                         ))}
                       </select>
                     </label>
-                  </div>
-                  <label className="block">
-                    <span className="mb-1 block text-sm font-semibold text-gray-700">
-                      Due date
-                    </span>
-                    <input
-                      type="datetime-local"
-                      value={dueAt}
-                      onChange={(event) => setDueAt(event.target.value)}
-                      className="h-11 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-sm font-semibold text-gray-700">
-                      Assigned agent
-                    </span>
-                    <select
-                      value={assignedToId}
-                      onChange={(event) => setAssignedToId(event.target.value)}
-                      className="h-11 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-1">
+                      <label className="block">
+                        <span className="mb-1 block text-sm font-semibold text-gray-700">
+                          Category
+                        </span>
+                        <select
+                          value={category}
+                          onChange={(event) =>
+                            setCategory(event.target.value as TicketCategory)
+                          }
+                          className="h-11 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
+                        >
+                          {Object.entries(categoryLabel).map(
+                            ([value, label]) => (
+                              <option key={value} value={value}>
+                                {label}
+                              </option>
+                            ),
+                          )}
+                        </select>
+                      </label>
+                    </div>
+                    <label className="block">
+                      <span className="mb-1 block text-sm font-semibold text-gray-700">
+                        Due date
+                      </span>
+                      <input
+                        type="datetime-local"
+                        value={dueAt}
+                        onChange={(event) => setDueAt(event.target.value)}
+                        className="h-11 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+                      />
+                    </label>
+                    {canAssignTicket ? (
+                      <label className="block">
+                        <span className="mb-1 block text-sm font-semibold text-gray-700">
+                          Assigned agent
+                        </span>
+                        <select
+                          value={assignedToId}
+                          onChange={(event) =>
+                            setAssignedToId(event.target.value)
+                          }
+                          className="h-11 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
+                        >
+                          <option value="">Unassigned</option>
+                          {users
+                            .filter((user) => user.role !== "USER")
+                            .map((user) => (
+                              <option key={user.id} value={user.id}>
+                                {user.name}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    <label className="block">
+                      <span className="mb-1 block text-sm font-semibold text-gray-700">
+                        Resolution
+                      </span>
+                      <textarea
+                        value={resolution}
+                        onChange={(event) => setResolution(event.target.value)}
+                        rows={4}
+                        className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+                      />
+                    </label>
+                    <button
+                      type="submit"
+                      disabled={saving}
+                      className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-white hover:bg-primary/90 disabled:opacity-60"
                     >
-                      <option value="">Unassigned</option>
-                      {users
-                        .filter((user) => user.role !== "USER")
-                        .map((user) => (
-                          <option key={user.id} value={user.id}>
-                            {user.name}
-                          </option>
-                        ))}
-                    </select>
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-sm font-semibold text-gray-700">
-                      Resolution
-                    </span>
-                    <textarea
-                      value={resolution}
-                      onChange={(event) => setResolution(event.target.value)}
-                      rows={4}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+                      <Save size={18} />
+                      Save
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <section className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
+                  <h2 className="mb-4 text-lg font-bold">Ticket details</h2>
+                  <div className="divide-y divide-gray-100">
+                    <DetailRow
+                      label="Assigned"
+                      value={ticket.assignedTo?.name ?? "Service desk queue"}
                     />
-                  </label>
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-white hover:bg-primary/90 disabled:opacity-60"
-                  >
-                    <Save size={18} />
-                    Save
-                  </button>
-                </div>
-              </form>
+                    <DetailRow
+                      label="Due date"
+                      value={formatDate(ticket.dueAt)}
+                    />
+                    <DetailRow
+                      label="Last updated"
+                      value={formatDate(ticket.updatedAt)}
+                    />
+                  </div>
+                </section>
+              )}
 
               <form
                 onSubmit={addComment}
@@ -369,23 +423,14 @@ export default function TicketDetailPage() {
               >
                 <h2 className="mb-4 text-lg font-bold">Add comment</h2>
                 <div className="space-y-4">
-                  <label className="block">
-                    <span className="mb-1 block text-sm font-semibold text-gray-700">
+                  <div>
+                    <div className="mb-1 text-sm font-semibold text-gray-700">
                       Author
-                    </span>
-                    <select
-                      value={userId}
-                      onChange={(event) => setUserId(event.target.value)}
-                      className="h-11 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
-                      required
-                    >
-                      {users.map((user) => (
-                        <option key={user.id} value={user.id}>
-                          {user.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                    </div>
+                    <div className="rounded-md bg-gray-50 px-3 py-2 text-sm font-semibold text-gray-700">
+                      {currentUser?.name ?? "Current user"}
+                    </div>
+                  </div>
                   <label className="block">
                     <span className="mb-1 block text-sm font-semibold text-gray-700">
                       Comment
@@ -499,6 +544,15 @@ function InfoPanel({ label, value }: { label: string; value: string }) {
         {label}
       </div>
       <div className="mt-1 text-sm font-semibold text-dark">{value}</div>
+    </div>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
+      <div className="text-sm font-semibold text-gray-500">{label}</div>
+      <div className="text-right text-sm font-semibold text-dark">{value}</div>
     </div>
   );
 }

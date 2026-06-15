@@ -37,7 +37,13 @@ import {
   UserRound,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 const statusOptions: Array<TicketStatus | "ALL"> = [
   "ALL",
@@ -100,6 +106,7 @@ function buildTicketsPath(filters: TicketFilters, page: number, limit: number) {
 export default function TicketsPage() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [meta, setMeta] = useState<PaginationMeta | null>(null);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<TicketStatus | "ALL">("ALL");
@@ -119,18 +126,30 @@ export default function TicketsPage() {
     () => ({ q, status, priority, category, assignee, overdueOnly }),
     [q, status, priority, category, assignee, overdueOnly],
   );
+  const isCustomerView = currentUser?.role === "USER";
+  const canManageAssignments = currentUser?.role === "ADMIN";
+
+  const fetchTicketsData = useCallback(async () => {
+    const sessionUser = await apiFetch<User>("/auth/me");
+    const [ticketData, userData] = await Promise.all([
+      apiFetch<PaginatedResponse<Ticket>>(
+        buildTicketsPath(filters, page, limit),
+      ),
+      sessionUser.role === "ADMIN"
+        ? apiFetch<User[]>("/users")
+        : Promise.resolve([] as User[]),
+    ]);
+
+    return { sessionUser, ticketData, userData };
+  }, [filters, page]);
 
   async function loadTickets() {
     setLoading(true);
     setError(null);
 
     try {
-      const [ticketData, userData] = await Promise.all([
-        apiFetch<PaginatedResponse<Ticket>>(
-          buildTicketsPath(filters, page, limit),
-        ),
-        apiFetch<User[]>("/users"),
-      ]);
+      const { sessionUser, ticketData, userData } = await fetchTicketsData();
+      setCurrentUser(sessionUser);
       setTickets(ticketData.data);
       setMeta(ticketData.meta);
       setUsers(userData);
@@ -146,14 +165,10 @@ export default function TicketsPage() {
 
     async function loadFilteredTickets() {
       try {
-        const [ticketData, userData] = await Promise.all([
-          apiFetch<PaginatedResponse<Ticket>>(
-            buildTicketsPath(filters, page, limit),
-          ),
-          apiFetch<User[]>("/users"),
-        ]);
+        const { sessionUser, ticketData, userData } = await fetchTicketsData();
 
         if (!ignore) {
+          setCurrentUser(sessionUser);
           setTickets(ticketData.data);
           setMeta(ticketData.meta);
           setUsers(userData);
@@ -175,7 +190,7 @@ export default function TicketsPage() {
     return () => {
       ignore = true;
     };
-  }, [filters, page]);
+  }, [fetchTicketsData]);
 
   const metrics = useMemo(() => {
     const active = tickets.filter((ticket) => !isTicketClosed(ticket)).length;
@@ -232,7 +247,11 @@ export default function TicketsPage() {
     <AppShell>
       <PageHeading
         title="Tickets"
-        description="Track ownership, category, SLA target, priority and current support status."
+        description={
+          isCustomerView
+            ? "Track your support requests, status, due dates and public updates."
+            : "Track ownership, category, SLA target, priority and current support status."
+        }
         action={
           <Link
             href="/tickets/new"
@@ -263,7 +282,7 @@ export default function TicketsPage() {
           tone={metrics.urgent > 0 ? "warning" : "default"}
         />
         <MetricCard
-          label="Unassigned"
+          label={isCustomerView ? "In queue" : "Unassigned"}
           value={metrics.unassigned}
           icon={<UserRound size={20} />}
         />
@@ -274,7 +293,7 @@ export default function TicketsPage() {
           <Filter size={18} />
           Filters
         </div>
-        <div className="grid gap-3 lg:grid-cols-[1.4fr_repeat(5,minmax(0,1fr))_auto]">
+        <div className="grid gap-3 lg:grid-cols-[1.4fr_repeat(4,minmax(0,1fr))_auto]">
           <label className="relative block">
             <Search
               size={17}
@@ -332,24 +351,26 @@ export default function TicketsPage() {
               </option>
             ))}
           </select>
-          <select
-            value={assignee}
-            onChange={(event) => {
-              resetPageAndMarkLoading();
-              setAssignee(event.target.value);
-            }}
-            className="h-10 rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
-          >
-            <option value="ALL">All assignees</option>
-            <option value="UNASSIGNED">Unassigned</option>
-            {users
-              .filter((user) => user.role !== "USER")
-              .map((user) => (
-                <option key={user.id} value={user.id}>
-                  {user.name}
-                </option>
-              ))}
-          </select>
+          {canManageAssignments ? (
+            <select
+              value={assignee}
+              onChange={(event) => {
+                resetPageAndMarkLoading();
+                setAssignee(event.target.value);
+              }}
+              className="h-10 rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
+            >
+              <option value="ALL">All assignees</option>
+              <option value="UNASSIGNED">Unassigned</option>
+              {users
+                .filter((user) => user.role !== "USER")
+                .map((user) => (
+                  <option key={user.id} value={user.id}>
+                    {user.name}
+                  </option>
+                ))}
+            </select>
+          ) : null}
           <label className="flex h-10 items-center gap-2 rounded-md border border-gray-300 px-3 text-sm font-medium text-gray-700">
             <input
               type="checkbox"
@@ -388,7 +409,9 @@ export default function TicketsPage() {
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Priority</th>
                   <th className="px-4 py-3">Category</th>
-                  <th className="px-4 py-3">Requester</th>
+                  {!isCustomerView ? (
+                    <th className="px-4 py-3">Requester</th>
+                  ) : null}
                   <th className="px-4 py-3">Assigned</th>
                   <th className="px-4 py-3">Due</th>
                   <th className="px-4 py-3">Comments</th>
@@ -421,29 +444,37 @@ export default function TicketsPage() {
                       <td className="px-4 py-4">
                         <CategoryBadge category={ticket.category} />
                       </td>
+                      {!isCustomerView ? (
+                        <td className="px-4 py-4 text-gray-600">
+                          {ticket.createdBy?.name ?? "-"}
+                        </td>
+                      ) : null}
                       <td className="px-4 py-4 text-gray-600">
-                        {ticket.createdBy?.name ?? "-"}
-                      </td>
-                      <td className="px-4 py-4 text-gray-600">
-                        <select
-                          value={ticket.assignedToId ?? ""}
-                          onChange={(event) =>
-                            assignTicket(ticket.id, event.target.value)
-                          }
-                          disabled={savingAssignmentId === ticket.id}
-                          className="h-9 min-w-[170px] rounded-md border border-gray-300 px-2 text-sm outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          <option value="">Unassigned</option>
-                          {users
-                            .filter(
-                              (user) => user.role !== "USER" && user.isActive,
-                            )
-                            .map((user) => (
-                              <option key={user.id} value={user.id}>
-                                {user.name}
-                              </option>
-                            ))}
-                        </select>
+                        {canManageAssignments ? (
+                          <select
+                            value={ticket.assignedToId ?? ""}
+                            onChange={(event) =>
+                              assignTicket(ticket.id, event.target.value)
+                            }
+                            disabled={savingAssignmentId === ticket.id}
+                            className="h-9 min-w-[170px] rounded-md border border-gray-300 px-2 text-sm outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <option value="">Unassigned</option>
+                            {users
+                              .filter(
+                                (user) => user.role !== "USER" && user.isActive,
+                              )
+                              .map((user) => (
+                                <option key={user.id} value={user.id}>
+                                  {user.name}
+                                </option>
+                              ))}
+                          </select>
+                        ) : (
+                          <span>
+                            {ticket.assignedTo?.name ?? "Service desk queue"}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-4">
                         <span

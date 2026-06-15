@@ -16,7 +16,6 @@ import {
   ApiError,
   apiFetch,
   clearStoredToken,
-  getStoredToken,
   getStoredUser,
   setStoredUser,
 } from "@/lib/api-client";
@@ -54,7 +53,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let ignore = false;
 
     async function validateSession() {
-      const token = getStoredToken();
       const cachedUser = getStoredUser();
 
       setSessionError(null);
