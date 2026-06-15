@@ -61,6 +61,17 @@ export class UsersService {
     });
   }
 
+  async findAssignees(): Promise<SafeUser[]> {
+    return this.prisma.user.findMany({
+      where: {
+        isActive: true,
+        role: { in: [Role.ADMIN, Role.AGENT] },
+      },
+      select: this.safeUserSelect,
+      orderBy: [{ role: 'asc' }, { name: 'asc' }],
+    });
+  }
+
   async findOne(id: string): Promise<SafeUser> {
     const user = await this.prisma.user.findUnique({
       where: { id },

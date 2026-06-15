@@ -16,6 +16,7 @@ describe('UsersService', () => {
   function createService() {
     const prisma = {
       user: {
+        findMany: jest.fn(),
         findUnique: jest.fn(),
         update: jest.fn(),
         count: jest.fn(),
@@ -27,6 +28,21 @@ describe('UsersService', () => {
       service: new UsersService(prisma as never),
     };
   }
+
+  it('returns only active support assignees', async () => {
+    const { prisma, service } = createService();
+    prisma.user.findMany.mockResolvedValue([safeUser]);
+
+    await expect(service.findAssignees()).resolves.toEqual([safeUser]);
+    expect(prisma.user.findMany).toHaveBeenCalledWith({
+      where: {
+        isActive: true,
+        role: { in: [Role.ADMIN, Role.AGENT] },
+      },
+      select: expect.any(Object),
+      orderBy: [{ role: 'asc' }, { name: 'asc' }],
+    });
+  });
 
   it('updates role and active status', async () => {
     const { prisma, service } = createService();
