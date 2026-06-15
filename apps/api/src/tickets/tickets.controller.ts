@@ -32,25 +32,35 @@ export class TicketsController {
   }
 
   @Get()
-  findAll(@Query() query: FindTicketsQueryDto) {
-    return this.ticketsService.findAll(query);
+  findAll(
+    @Query() query: FindTicketsQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ticketsService.findAll(query, user);
   }
 
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.ticketsService.findOne(id);
+  findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ticketsService.findOne(id, user);
   }
 
   @Patch(':id')
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateTicketDto: UpdateTicketDto,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ticketsService.update(id, updateTicketDto);
+    return this.ticketsService.update(id, updateTicketDto, user);
   }
 
   @Delete(':id')
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.ticketsService.remove(id);
+  remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ticketsService.remove(id, user);
   }
 }

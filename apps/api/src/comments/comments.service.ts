@@ -45,6 +45,7 @@ export class CommentsService {
 
   async create(createCommentDto: CreateCommentDto, user: AuthenticatedUser) {
     this.ensureInternalCommentAllowed(createCommentDto.isInternal, user);
+    await this.ensureTicketVisible(createCommentDto.ticketId, user);
 
     const userId = this.resolveActorId(user, createCommentDto.userId);
 
@@ -65,27 +66,21 @@ export class CommentsService {
 
   async findAll(query: FindCommentsQueryDto, user: AuthenticatedUser) {
     return this.prisma.comment.findMany({
-      where: {
-        ticketId: query.ticketId,
-        userId: query.userId,
-        isInternal: this.canUseInternalComments(user) ? undefined : false,
-      },
+      where: this.buildWhere(query, user),
       select: this.commentSelect,
       orderBy: { createdAt: 'asc' },
     });
   }
 
   async findOne(id: string, user: AuthenticatedUser) {
-    const comment = await this.prisma.comment.findUnique({
-      where: { id },
+    const comment = await this.prisma.comment.findFirst({
+      where: this.buildVisibilityWhere({ id }, user),
       select: this.commentSelect,
     });
 
     if (!comment) {
       throw new NotFoundException('Comment not found');
     }
-
-    this.ensureCommentVisible(comment.isInternal, user);
 
     return comment;
   }
@@ -100,6 +95,8 @@ export class CommentsService {
     if (currentComment.isInternal || updateCommentDto.isInternal) {
       this.ensureInternalCommentAllowed(true, user);
     }
+
+    this.ensureCommentMutable(currentComment, user);
 
     return this.prisma.comment.update({
       where: { id },
@@ -117,6 +114,8 @@ export class CommentsService {
     if (currentComment.isInternal) {
       this.ensureInternalCommentAllowed(true, user);
     }
+
+    this.ensureCommentMutable(currentComment, user);
 
     return this.prisma.comment.delete({
       where: { id },
@@ -144,6 +143,34 @@ export class CommentsService {
     return user.role === Role.ADMIN || user.role === Role.AGENT;
   }
 
+  private buildWhere(
+    query: FindCommentsQueryDto,
+    user: AuthenticatedUser,
+  ): Prisma.CommentWhereInput {
+    return this.buildVisibilityWhere(
+      {
+        ticketId: query.ticketId,
+        userId: query.userId,
+      },
+      user,
+    );
+  }
+
+  private buildVisibilityWhere(
+    where: Prisma.CommentWhereInput,
+    user: AuthenticatedUser,
+  ): Prisma.CommentWhereInput {
+    if (this.canUseInternalComments(user)) {
+      return where;
+    }
+
+    return {
+      ...where,
+      isInternal: false,
+      ticket: { createdById: user.id },
+    };
+  }
+
   private ensureInternalCommentAllowed(
     isInternal: boolean | undefined,
     user: AuthenticatedUser,
@@ -153,19 +180,40 @@ export class CommentsService {
     }
   }
 
-  private ensureCommentVisible(
-    isInternal: boolean,
+  private async ensureTicketVisible(
+    ticketId: string,
     user: AuthenticatedUser,
-  ): void {
-    if (isInternal && !this.canUseInternalComments(user)) {
-      throw new NotFoundException('Comment not found');
+  ): Promise<void> {
+    if (this.canUseInternalComments(user)) {
+      return;
+    }
+
+    const ticket = await this.prisma.ticket.findFirst({
+      where: {
+        id: ticketId,
+        createdById: user.id,
+      },
+      select: { id: true },
+    });
+
+    if (!ticket) {
+      throw new NotFoundException('Ticket not found');
     }
   }
 
   private async ensureCommentExists(id: string) {
     const comment = await this.prisma.comment.findUnique({
       where: { id },
-      select: { id: true, isInternal: true },
+      select: {
+        id: true,
+        isInternal: true,
+        userId: true,
+        ticket: {
+          select: {
+            createdById: true,
+          },
+        },
+      },
     });
 
     if (!comment) {
@@ -173,6 +221,27 @@ export class CommentsService {
     }
 
     return comment;
+  }
+
+  private ensureCommentMutable(
+    comment: Awaited<ReturnType<CommentsService['ensureCommentExists']>>,
+    user: AuthenticatedUser,
+  ): void {
+    if (this.canUseInternalComments(user)) {
+      return;
+    }
+
+    if (
+      comment.isInternal ||
+      !comment.ticket ||
+      comment.ticket.createdById !== user.id
+    ) {
+      throw new NotFoundException('Comment not found');
+    }
+
+    if (comment.userId !== user.id) {
+      throw new ForbiddenException('Only the comment author can modify it');
+    }
   }
 
   private handlePrismaWriteError(error: unknown): never {

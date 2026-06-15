@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -79,8 +80,8 @@ export class TicketsService {
     }
   }
 
-  async findAll(query: FindTicketsQueryDto) {
-    const where = this.buildWhere(query);
+  async findAll(query: FindTicketsQueryDto, user: AuthenticatedUser) {
+    const where = this.buildWhere(query, user);
     const { page, skip, take } = this.resolvePagination(query);
     const [total, data] = await this.prisma.$transaction([
       this.prisma.ticket.count({ where }),
@@ -108,9 +109,9 @@ export class TicketsService {
     };
   }
 
-  async findOne(id: string) {
-    const ticket = await this.prisma.ticket.findUnique({
-      where: { id },
+  async findOne(id: string, user: AuthenticatedUser) {
+    const ticket = await this.prisma.ticket.findFirst({
+      where: this.buildTicketVisibilityWhere({ id }, user),
       select: this.ticketSelect,
     });
 
@@ -121,7 +122,13 @@ export class TicketsService {
     return ticket;
   }
 
-  async update(id: string, updateTicketDto: UpdateTicketDto) {
+  async update(
+    id: string,
+    updateTicketDto: UpdateTicketDto,
+    user: AuthenticatedUser,
+  ) {
+    this.ensureCanManageTickets(user);
+
     const currentTicket = await this.ensureTicketExists(id);
     const statusChanged =
       updateTicketDto.status !== undefined &&
@@ -169,7 +176,9 @@ export class TicketsService {
     }
   }
 
-  async remove(id: string): Promise<Ticket> {
+  async remove(id: string, user: AuthenticatedUser): Promise<Ticket> {
+    this.ensureCanManageTickets(user);
+
     await this.ensureTicketExists(id);
 
     try {
@@ -204,15 +213,21 @@ export class TicketsService {
       return fallbackUserId;
     }
 
-    if (fallbackUserId && this.canCreateOnBehalf(user.role)) {
+    if (fallbackUserId && this.canManageTickets(user.role)) {
       return fallbackUserId;
     }
 
     return user.id;
   }
 
-  private canCreateOnBehalf(role: Role): boolean {
+  private canManageTickets(role: Role): boolean {
     return role === Role.ADMIN || role === Role.AGENT;
+  }
+
+  private ensureCanManageTickets(user: AuthenticatedUser): void {
+    if (!this.canManageTickets(user.role)) {
+      throw new ForbiddenException('Support role required to manage tickets');
+    }
   }
 
   private resolvePriority(category: TicketCategory): TicketPriority {
@@ -239,12 +254,17 @@ export class TicketsService {
     return new Date(Date.now() + hoursByPriority[priority] * 60 * 60 * 1000);
   }
 
-  private buildWhere(query: FindTicketsQueryDto): Prisma.TicketWhereInput {
+  private buildWhere(
+    query: FindTicketsQueryDto,
+    user: AuthenticatedUser,
+  ): Prisma.TicketWhereInput {
     const where: Prisma.TicketWhereInput = {
       status: query.status,
       priority: query.priority,
       category: query.category,
-      createdById: query.createdById,
+      createdById: this.canManageTickets(user.role)
+        ? query.createdById
+        : user.id,
     };
 
     if (query.assignedToId) {
@@ -272,6 +292,20 @@ export class TicketsService {
     }
 
     return where;
+  }
+
+  private buildTicketVisibilityWhere(
+    where: Prisma.TicketWhereInput,
+    user: AuthenticatedUser,
+  ): Prisma.TicketWhereInput {
+    if (this.canManageTickets(user.role)) {
+      return where;
+    }
+
+    return {
+      ...where,
+      createdById: user.id,
+    };
   }
 
   private resolvePagination(query: FindTicketsQueryDto) {
