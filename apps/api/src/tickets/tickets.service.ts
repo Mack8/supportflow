@@ -38,6 +38,26 @@ export class TicketsService {
     TicketStatus.RESOLVED,
     TicketStatus.CLOSED,
   ];
+  private readonly allowedStatusTransitions: Record<
+    TicketStatus,
+    TicketStatus[]
+  > = {
+    [TicketStatus.OPEN]: [
+      TicketStatus.IN_PROGRESS,
+      TicketStatus.WAITING_USER,
+      TicketStatus.RESOLVED,
+    ],
+    [TicketStatus.IN_PROGRESS]: [
+      TicketStatus.WAITING_USER,
+      TicketStatus.RESOLVED,
+    ],
+    [TicketStatus.WAITING_USER]: [
+      TicketStatus.IN_PROGRESS,
+      TicketStatus.RESOLVED,
+    ],
+    [TicketStatus.RESOLVED]: [TicketStatus.IN_PROGRESS, TicketStatus.CLOSED],
+    [TicketStatus.CLOSED]: [],
+  };
 
   private readonly safeUserSelect = {
     id: true,
@@ -188,9 +208,17 @@ export class TicketsService {
     this.ensureCanManageTickets(user);
 
     const currentTicket = await this.ensureTicketExists(id);
+    this.ensureValidStatusTransition(
+      currentTicket.status,
+      updateTicketDto.status,
+    );
+
     const statusChanged =
       updateTicketDto.status !== undefined &&
       updateTicketDto.status !== currentTicket.status;
+    const resolutionClearRequested = this.isResolutionClearRequested(
+      updateTicketDto.resolution,
+    );
     const priority = updateTicketDto.priority
       ?? (updateTicketDto.category
         ? this.resolvePriority(updateTicketDto.category)
@@ -220,11 +248,15 @@ export class TicketsService {
           lastStatusChangeAt: statusChanged ? new Date() : undefined,
           resolvedAt: this.resolveResolvedAt(
             updateTicketDto.status,
+            currentTicket.status,
             currentTicket.resolvedAt,
+            resolutionClearRequested,
           ),
           closedAt: this.resolveClosedAt(
             updateTicketDto.status,
+            currentTicket.status,
             currentTicket.closedAt,
+            resolutionClearRequested,
           ),
         },
         select: this.ticketSelect,
@@ -412,6 +444,10 @@ export class TicketsService {
     value: string | null | undefined,
     currentResolution: string | null,
   ): string | null {
+    if (this.isResolutionClearRequested(value)) {
+      return null;
+    }
+
     const resolution = this.trimNullable(value);
 
     if (resolution === undefined) {
@@ -419,6 +455,25 @@ export class TicketsService {
     }
 
     return resolution;
+  }
+
+  private isResolutionClearRequested(value: string | null | undefined): boolean {
+    return value === null || value?.trim() === '';
+  }
+
+  private ensureValidStatusTransition(
+    currentStatus: TicketStatus,
+    nextStatus: TicketStatus | undefined,
+  ): void {
+    if (!nextStatus || nextStatus === currentStatus) {
+      return;
+    }
+
+    if (!this.allowedStatusTransitions[currentStatus].includes(nextStatus)) {
+      throw new BadRequestException(
+        `Invalid ticket status transition from ${currentStatus} to ${nextStatus}`,
+      );
+    }
   }
 
   private ensureTerminalStatusHasResolution(
@@ -437,7 +492,9 @@ export class TicketsService {
 
   private resolveResolvedAt(
     status: TicketStatus | undefined,
+    currentStatus: TicketStatus,
     currentResolvedAt: Date | null,
+    resolutionClearRequested: boolean,
   ): Date | null | undefined {
     if (!status) {
       return undefined;
@@ -447,18 +504,40 @@ export class TicketsService {
       return currentResolvedAt ?? new Date();
     }
 
+    if (
+      currentStatus === TicketStatus.RESOLVED &&
+      status === TicketStatus.IN_PROGRESS &&
+      !resolutionClearRequested
+    ) {
+      return undefined;
+    }
+
     return null;
   }
 
   private resolveClosedAt(
     status: TicketStatus | undefined,
+    currentStatus: TicketStatus,
     currentClosedAt: Date | null,
+    resolutionClearRequested: boolean,
   ): Date | null | undefined {
     if (!status) {
       return undefined;
     }
 
-    return status === TicketStatus.CLOSED ? currentClosedAt ?? new Date() : null;
+    if (status === TicketStatus.CLOSED) {
+      return currentClosedAt ?? new Date();
+    }
+
+    if (
+      currentStatus === TicketStatus.RESOLVED &&
+      status === TicketStatus.IN_PROGRESS &&
+      !resolutionClearRequested
+    ) {
+      return undefined;
+    }
+
+    return null;
   }
 
   private async ensureTicketExists(id: string) {

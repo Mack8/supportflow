@@ -41,6 +41,7 @@ describe('TicketsService', () => {
     const prisma = {
       ticket: {
         count: jest.fn().mockReturnValue('count-query'),
+        create: jest.fn(),
         findMany: jest.fn().mockReturnValue('find-many-query'),
         findFirst: jest.fn(),
         findUnique: jest.fn(),
@@ -54,6 +55,52 @@ describe('TicketsService', () => {
       service: new TicketsService(prisma as never),
     };
   }
+
+  it('uses the authenticated user when regular users create tickets', async () => {
+    const { prisma, service } = createService();
+    prisma.ticket.create.mockResolvedValue(ticket);
+
+    await service.create(
+      {
+        title: 'Printer offline',
+        description: 'The shared printer is unavailable.',
+        category: TicketCategory.TECHNICAL,
+        createdById: 'other-user',
+      },
+      regularUser,
+    );
+
+    expect(prisma.ticket.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          createdById: regularUser.id,
+        }),
+      }),
+    );
+  });
+
+  it('allows support users to create tickets on behalf of requesters', async () => {
+    const { prisma, service } = createService();
+    prisma.ticket.create.mockResolvedValue(ticket);
+
+    await service.create(
+      {
+        title: 'Printer offline',
+        description: 'The shared printer is unavailable.',
+        category: TicketCategory.TECHNICAL,
+        createdById: 'customer-1',
+      },
+      adminUser,
+    );
+
+    expect(prisma.ticket.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          createdById: 'customer-1',
+        }),
+      }),
+    );
+  });
 
   it('returns paginated ticket metadata', async () => {
     const { prisma, service } = createService();
@@ -154,6 +201,85 @@ describe('TicketsService', () => {
       service.update(ticket.id, { status: TicketStatus.RESOLVED }, adminUser),
     ).rejects.toThrow(BadRequestException);
     expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid status transitions', async () => {
+    const { prisma, service } = createService();
+    prisma.ticket.findUnique.mockResolvedValue({
+      id: ticket.id,
+      status: TicketStatus.OPEN,
+      resolvedAt: null,
+      closedAt: null,
+      resolution: null,
+    });
+
+    await expect(
+      service.update(
+        ticket.id,
+        { status: TicketStatus.CLOSED, resolution: 'Closed directly' },
+        adminUser,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps resolution metadata when reopening without an explicit clear', async () => {
+    const { prisma, service } = createService();
+    const resolvedAt = new Date('2026-01-01T00:00:00.000Z');
+    prisma.ticket.findUnique.mockResolvedValue({
+      id: ticket.id,
+      status: TicketStatus.RESOLVED,
+      resolvedAt,
+      closedAt: null,
+      resolution: 'Replaced faulty printer cable.',
+    });
+    prisma.ticket.update.mockResolvedValue({
+      ...ticket,
+      status: TicketStatus.IN_PROGRESS,
+      resolvedAt,
+      resolution: 'Replaced faulty printer cable.',
+    });
+
+    await service.update(
+      ticket.id,
+      { status: TicketStatus.IN_PROGRESS },
+      adminUser,
+    );
+
+    const updateArgs = prisma.ticket.update.mock.calls[0][0];
+    expect(updateArgs.data.resolution).toBe('Replaced faulty printer cable.');
+    expect(updateArgs.data.resolvedAt).toBeUndefined();
+    expect(updateArgs.data.closedAt).toBeUndefined();
+  });
+
+  it('clears resolution metadata when reopening with an explicit clear', async () => {
+    const { prisma, service } = createService();
+    const resolvedAt = new Date('2026-01-01T00:00:00.000Z');
+    prisma.ticket.findUnique.mockResolvedValue({
+      id: ticket.id,
+      status: TicketStatus.RESOLVED,
+      resolvedAt,
+      closedAt: null,
+      resolution: 'Replaced faulty printer cable.',
+    });
+    prisma.ticket.update.mockResolvedValue({
+      ...ticket,
+      status: TicketStatus.IN_PROGRESS,
+      resolvedAt: null,
+      closedAt: null,
+      resolution: null,
+    });
+
+    await service.update(
+      ticket.id,
+      { status: TicketStatus.IN_PROGRESS, resolution: null },
+      adminUser,
+    );
+
+    const updateArgs = prisma.ticket.update.mock.calls[0][0];
+    expect(updateArgs.data.resolution).toBeNull();
+    expect(updateArgs.data.resolvedAt).toBeNull();
+    expect(updateArgs.data.closedAt).toBeNull();
   });
 
   it('blocks regular users from managing tickets', async () => {
