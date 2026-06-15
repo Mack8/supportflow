@@ -127,7 +127,8 @@ export default function TicketsPage() {
     [q, status, priority, category, assignee, overdueOnly],
   );
   const isCustomerView = currentUser?.role === "USER";
-  const canManageAssignments = currentUser?.role === "ADMIN";
+  const canManageAssignments =
+    currentUser?.role === "ADMIN" || currentUser?.role === "AGENT";
 
   const fetchTicketsData = useCallback(async () => {
     const sessionUser = await apiFetch<User>("/auth/me");
@@ -135,8 +136,8 @@ export default function TicketsPage() {
       apiFetch<PaginatedResponse<Ticket>>(
         buildTicketsPath(filters, page, limit),
       ),
-      sessionUser.role === "ADMIN"
-        ? apiFetch<User[]>("/users")
+      sessionUser.role === "ADMIN" || sessionUser.role === "AGENT"
+        ? apiFetch<User[]>("/users/assignees")
         : Promise.resolve([] as User[]),
     ]);
 
@@ -362,13 +363,11 @@ export default function TicketsPage() {
             >
               <option value="ALL">All assignees</option>
               <option value="UNASSIGNED">Unassigned</option>
-              {users
-                .filter((user) => user.role !== "USER")
-                .map((user) => (
-                  <option key={user.id} value={user.id}>
-                    {user.name}
-                  </option>
-                ))}
+              {users.map((user) => (
+                <option key={user.id} value={user.id}>
+                  {user.name}
+                </option>
+              ))}
             </select>
           ) : null}
           <label className="flex h-10 items-center gap-2 rounded-md border border-gray-300 px-3 text-sm font-medium text-gray-700">
@@ -460,15 +459,11 @@ export default function TicketsPage() {
                             className="h-9 min-w-[170px] rounded-md border border-gray-300 px-2 text-sm outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <option value="">Unassigned</option>
-                            {users
-                              .filter(
-                                (user) => user.role !== "USER" && user.isActive,
-                              )
-                              .map((user) => (
-                                <option key={user.id} value={user.id}>
-                                  {user.name}
-                                </option>
-                              ))}
+                            {users.map((user) => (
+                              <option key={user.id} value={user.id}>
+                                {user.name}
+                              </option>
+                            ))}
                           </select>
                         ) : (
                           <span>

@@ -4,7 +4,8 @@ import { AppShell } from "@/components/layout/app-shell";
 import { PageHeading } from "@/components/layout/page-heading";
 import { CategoryBadge, PriorityBadge } from "@/components/ui/badge";
 import { ErrorState } from "@/components/ui/error-state";
-import { apiFetch, getStoredUser } from "@/lib/api-client";
+import { LoadingState } from "@/components/ui/loading-state";
+import { apiFetch } from "@/lib/api-client";
 import { categoryLabel } from "@/lib/format";
 import type {
   Ticket,
@@ -50,45 +51,61 @@ export default function NewTicketPage() {
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState<TicketCategory>("GENERAL");
   const [createdById, setCreatedById] = useState("");
-  const [requesterName, setRequesterName] = useState("Current user");
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [requesters, setRequesters] = useState<User[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   const computedPriority = useMemo(() => categoryPriority[category], [category]);
+  const canCreateOnBehalf =
+    currentUser?.role === "ADMIN" || currentUser?.role === "AGENT";
+  const selectedRequester = requesters.find((user) => user.id === createdById);
+  const requesterName = canCreateOnBehalf
+    ? selectedRequester?.name ?? "Select requester"
+    : currentUser?.name ?? "Current user";
 
   useEffect(() => {
     let ignore = false;
 
-    async function loadFallbackRequester() {
+    async function loadRequesterContext() {
       try {
-        const storedUser = await Promise.resolve(getStoredUser());
-        if (storedUser) {
-          if (!ignore) {
-            setCreatedById(storedUser.id);
-            setRequesterName(storedUser.name);
-          }
+        const user = await apiFetch<User>("/auth/me");
 
+        if (ignore) {
           return;
         }
 
-        const users = await apiFetch<User[]>("/users");
-        const requester =
-          users.find((user) => user.role === "USER" && user.isActive) ??
-          users.find((user) => user.isActive) ??
-          users[0];
+        setCurrentUser(user);
 
-        if (!ignore && requester) {
-          setCreatedById(requester.id);
-          setRequesterName(requester.name);
+        if (user.role !== "ADMIN" && user.role !== "AGENT") {
+          setCreatedById(user.id);
+          return;
+        }
+
+        const users = await apiFetch<User[]>("/users/requesters");
+
+        if (ignore) {
+          return;
+        }
+
+        setRequesters(users);
+        setCreatedById(users[0]?.id ?? "");
+        if (users.length === 0) {
+          setError("No active requesters available.");
         }
       } catch (err) {
         if (!ignore) {
           setError(err instanceof Error ? err.message : "Could not load user");
         }
+      } finally {
+        if (!ignore) {
+          setLoading(false);
+        }
       }
     }
 
-    void loadFallbackRequester();
+    void loadRequesterContext();
 
     return () => {
       ignore = true;
@@ -101,13 +118,20 @@ export default function NewTicketPage() {
     setError(null);
 
     try {
+      const requesterId = canCreateOnBehalf ? createdById : currentUser?.id;
+
+      if (!requesterId) {
+        setError("Requester is required.");
+        return;
+      }
+
       const ticket = await apiFetch<Ticket>("/tickets", {
         method: "POST",
         body: JSON.stringify({
           title,
           description,
           category,
-          createdById,
+          createdById: requesterId,
         }),
       });
 
@@ -126,11 +150,34 @@ export default function NewTicketPage() {
         description="Open a support request with the information the service desk needs to triage it."
       />
 
+      {loading ? <LoadingState label="Loading requester" /> : null}
+
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
           {error ? <ErrorState message={error} /> : null}
 
           <form onSubmit={handleSubmit} className="space-y-5">
+            {canCreateOnBehalf ? (
+              <label className="block">
+                <span className="mb-1 flex items-center gap-2 text-sm font-semibold text-gray-700">
+                  <UserRound size={17} />
+                  Requester
+                </span>
+                <select
+                  value={createdById}
+                  onChange={(event) => setCreatedById(event.target.value)}
+                  className="h-12 w-full rounded-md border border-gray-300 px-3 text-base outline-none focus:border-primary"
+                  required
+                >
+                  {requesters.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
             <label className="block">
               <span className="mb-1 flex items-center gap-2 text-sm font-semibold text-gray-700">
                 <ClipboardList size={17} />

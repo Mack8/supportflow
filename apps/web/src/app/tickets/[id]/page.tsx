@@ -31,9 +31,18 @@ import {
   FormEvent,
   useCallback,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
+
+const allowedStatusTransitions: Record<TicketStatus, TicketStatus[]> = {
+  OPEN: ["IN_PROGRESS", "WAITING_USER", "RESOLVED"],
+  IN_PROGRESS: ["WAITING_USER", "RESOLVED"],
+  WAITING_USER: ["IN_PROGRESS", "RESOLVED"],
+  RESOLVED: ["IN_PROGRESS", "CLOSED"],
+  CLOSED: [],
+};
 
 export default function TicketDetailPage() {
   const params = useParams<{ id: string }>();
@@ -56,9 +65,19 @@ export default function TicketDetailPage() {
   const canUseInternalComments =
     currentUser?.role === "ADMIN" || currentUser?.role === "AGENT";
   const canManageTicket = canUseInternalComments;
-  const canAssignTicket = currentUser?.role === "ADMIN";
+  const canAssignTicket = canManageTicket;
   const publicComments = comments.filter((comment) => !comment.isInternal);
   const internalComments = comments.filter((comment) => comment.isInternal);
+  const statusOptions = useMemo(() => {
+    if (!ticket) {
+      return Object.keys(statusLabel) as TicketStatus[];
+    }
+
+    return [
+      ticket.status,
+      ...allowedStatusTransitions[ticket.status],
+    ] as TicketStatus[];
+  }, [ticket]);
 
   const syncTicketForm = useCallback((ticketData: Ticket) => {
     setStatus(ticketData.status);
@@ -73,8 +92,8 @@ export default function TicketDetailPage() {
     const [ticketData, commentData, userData] = await Promise.all([
       apiFetch<Ticket>(`/tickets/${ticketId}`),
       apiFetch<Comment[]>(`/comments?ticketId=${ticketId}`),
-      sessionUser.role === "ADMIN"
-        ? apiFetch<User[]>("/users")
+      sessionUser.role === "ADMIN" || sessionUser.role === "AGENT"
+        ? apiFetch<User[]>("/users/assignees")
         : Promise.resolve([] as User[]),
     ]);
 
@@ -313,9 +332,9 @@ export default function TicketDetailPage() {
                         }
                         className="h-11 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
                       >
-                        {Object.entries(statusLabel).map(([value, label]) => (
+                        {statusOptions.map((value) => (
                           <option key={value} value={value}>
-                            {label}
+                            {statusLabel[value]}
                           </option>
                         ))}
                       </select>
@@ -366,13 +385,11 @@ export default function TicketDetailPage() {
                           className="h-11 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-primary"
                         >
                           <option value="">Unassigned</option>
-                          {users
-                            .filter((user) => user.role !== "USER")
-                            .map((user) => (
-                              <option key={user.id} value={user.id}>
-                                {user.name}
-                              </option>
-                            ))}
+                          {users.map((user) => (
+                            <option key={user.id} value={user.id}>
+                              {user.name}
+                            </option>
+                          ))}
                         </select>
                       </label>
                     ) : null}
@@ -383,6 +400,7 @@ export default function TicketDetailPage() {
                       <textarea
                         value={resolution}
                         onChange={(event) => setResolution(event.target.value)}
+                        required={status === "RESOLVED" || status === "CLOSED"}
                         rows={4}
                         className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
                       />
