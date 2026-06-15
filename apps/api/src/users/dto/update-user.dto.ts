@@ -1,10 +1,13 @@
 import {
+  IsBoolean,
   IsEmail,
+  IsEnum,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { Role } from '../../../generated/prisma/enums.js';
 
 export class UpdateUserDto {
   @IsOptional()
@@ -17,4 +20,12 @@ export class UpdateUserDto {
   @IsEmail()
   @MaxLength(254)
   email?: string;
+
+  @IsOptional()
+  @IsEnum(Role)
+  role?: Role;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 }
