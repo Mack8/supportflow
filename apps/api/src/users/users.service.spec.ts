@@ -44,6 +44,23 @@ describe('UsersService', () => {
     });
   });
 
+  it('returns only active customer requesters', async () => {
+    const { prisma, service } = createService();
+    prisma.user.findMany.mockResolvedValue([{ ...safeUser, role: Role.USER }]);
+
+    await expect(service.findRequesters()).resolves.toEqual([
+      { ...safeUser, role: Role.USER },
+    ]);
+    expect(prisma.user.findMany).toHaveBeenCalledWith({
+      where: {
+        isActive: true,
+        role: Role.USER,
+      },
+      select: expect.any(Object),
+      orderBy: { name: 'asc' },
+    });
+  });
+
   it('updates role and active status', async () => {
     const { prisma, service } = createService();
     prisma.user.findUnique.mockResolvedValueOnce({

@@ -32,6 +32,12 @@ export class UsersController {
     return this.usersService.findAssignees();
   }
 
+  @Roles(Role.ADMIN, Role.AGENT)
+  @Get('requesters')
+  findRequesters() {
+    return this.usersService.findRequesters();
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.usersService.findOne(id);
