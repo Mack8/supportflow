@@ -78,3 +78,12 @@ export type PaginatedResponse<T> = {
   data: T[];
   meta: PaginationMeta;
 };
+
+export type TicketStats = {
+  total: number;
+  active: number;
+  urgent: number;
+  overdue: number;
+  unassigned: number;
+  byStatus: Record<TicketStatus, number>;
+};

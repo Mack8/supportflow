@@ -11,16 +11,18 @@ import type {
   Comment,
   PaginatedResponse,
   Ticket,
+  TicketStats,
   TicketStatus,
   User,
 } from "@/types/domain";
 import { MessageSquare, TicketCheck, Timer, Users } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type DashboardData = {
   tickets: Ticket[];
   comments: Comment[];
+  stats: TicketStats;
   currentUser: User;
   userCount?: number;
 };
@@ -38,10 +40,11 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  async function fetchDashboardData(): Promise<DashboardData> {
+  const fetchDashboardData = useCallback(async (): Promise<DashboardData> => {
     const currentUser = await apiFetch<User>("/auth/me");
-    const [ticketPage, comments, users] = await Promise.all([
-      apiFetch<PaginatedResponse<Ticket>>("/tickets?limit=100"),
+    const [ticketPage, stats, comments, users] = await Promise.all([
+      apiFetch<PaginatedResponse<Ticket>>("/tickets?limit=8"),
+      apiFetch<TicketStats>("/tickets/stats"),
       apiFetch<Comment[]>("/comments"),
       currentUser.role === "ADMIN"
         ? apiFetch<User[]>("/users")
@@ -51,10 +54,11 @@ export default function DashboardPage() {
     return {
       tickets: ticketPage.data,
       comments,
+      stats,
       currentUser,
       userCount: currentUser.role === "ADMIN" ? users.length : undefined,
     };
-  }
+  }, []);
 
   async function loadData() {
     setLoading(true);
@@ -97,18 +101,8 @@ export default function DashboardPage() {
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [fetchDashboardData]);
 
-  const summary = useMemo(() => {
-    const tickets = data?.tickets ?? [];
-    return {
-      open: tickets.filter((ticket) => ticket.status === "OPEN").length,
-      active: tickets.filter((ticket) =>
-        ["OPEN", "IN_PROGRESS", "WAITING_USER"].includes(ticket.status),
-      ).length,
-      urgent: tickets.filter((ticket) => ticket.priority === "URGENT").length,
-    };
-  }, [data]);
   const isCustomerView = data?.currentUser.role === "USER";
 
   return (
@@ -138,12 +132,12 @@ export default function DashboardPage() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard
               label={isCustomerView ? "My tickets" : "Total tickets"}
-              value={data.tickets.length}
+              value={data.stats.total}
               icon={<TicketCheck size={22} />}
             />
             <MetricCard
               label="Active tickets"
-              value={summary.active}
+              value={data.stats.active}
               icon={<Timer size={22} />}
             />
             {data.userCount !== undefined ? (
@@ -155,7 +149,7 @@ export default function DashboardPage() {
             ) : (
               <MetricCard
                 label="Urgent"
-                value={summary.urgent}
+                value={data.stats.urgent}
                 icon={<Timer size={22} />}
               />
             )}
@@ -225,11 +219,9 @@ export default function DashboardPage() {
               <h2 className="mb-4 text-lg font-bold text-dark">Status mix</h2>
               <div className="space-y-3">
                 {statuses.map((status) => {
-                  const count = data.tickets.filter(
-                    (ticket) => ticket.status === status,
-                  ).length;
-                  const pct = data.tickets.length
-                    ? Math.round((count / data.tickets.length) * 100)
+                  const count = data.stats.byStatus[status] ?? 0;
+                  const pct = data.stats.total
+                    ? Math.round((count / data.stats.total) * 100)
                     : 0;
 
                   return (
