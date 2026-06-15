@@ -39,6 +39,11 @@ export class TicketsController {
     return this.ticketsService.findAll(query, user);
   }
 
+  @Get('stats')
+  getStats(@CurrentUser() user: AuthenticatedUser) {
+    return this.ticketsService.getStats(user);
+  }
+
   @Get(':id')
   findOne(
     @Param('id', ParseUUIDPipe) id: string,

@@ -26,6 +26,18 @@ import { UpdateTicketDto } from './dto/update-ticket.dto';
 export class TicketsService {
   private readonly defaultPage = 1;
   private readonly defaultPageLimit = 25;
+  private readonly activeStatuses = [
+    TicketStatus.OPEN,
+    TicketStatus.IN_PROGRESS,
+    TicketStatus.WAITING_USER,
+  ];
+  private readonly ticketStatuses = [
+    TicketStatus.OPEN,
+    TicketStatus.IN_PROGRESS,
+    TicketStatus.WAITING_USER,
+    TicketStatus.RESOLVED,
+    TicketStatus.CLOSED,
+  ];
 
   private readonly safeUserSelect = {
     id: true,
@@ -106,6 +118,52 @@ export class TicketsService {
         total,
         totalPages: Math.ceil(total / take),
       },
+    };
+  }
+
+  async getStats(user: AuthenticatedUser) {
+    const where = this.buildTicketVisibilityWhere({}, user);
+    const activeWhere = this.mergeWhere(where, {
+      status: { in: this.activeStatuses },
+    });
+    const [
+      total,
+      active,
+      urgent,
+      overdue,
+      unassigned,
+      ...statusCounts
+    ] = await this.prisma.$transaction([
+      this.prisma.ticket.count({ where }),
+      this.prisma.ticket.count({ where: activeWhere }),
+      this.prisma.ticket.count({
+        where: this.mergeWhere(where, { priority: TicketPriority.URGENT }),
+      }),
+      this.prisma.ticket.count({
+        where: this.mergeWhere(activeWhere, { dueAt: { lt: new Date() } }),
+      }),
+      this.prisma.ticket.count({
+        where: this.mergeWhere(where, { assignedToId: null }),
+      }),
+      ...this.ticketStatuses.map((status) =>
+        this.prisma.ticket.count({
+          where: this.mergeWhere(where, { status }),
+        }),
+      ),
+    ]);
+
+    return {
+      total,
+      active,
+      urgent,
+      overdue,
+      unassigned,
+      byStatus: Object.fromEntries(
+        this.ticketStatuses.map((status, index) => [
+          status,
+          statusCounts[index] ?? 0,
+        ]),
+      ) as Record<TicketStatus, number>,
     };
   }
 
@@ -305,6 +363,16 @@ export class TicketsService {
     return {
       ...where,
       createdById: user.id,
+    };
+  }
+
+  private mergeWhere(
+    base: Prisma.TicketWhereInput,
+    next: Prisma.TicketWhereInput,
+  ): Prisma.TicketWhereInput {
+    return {
+      ...base,
+      ...next,
     };
   }
 

@@ -98,6 +98,31 @@ describe('TicketsService', () => {
     );
   });
 
+  it('returns role scoped ticket stats', async () => {
+    const { prisma, service } = createService();
+    prisma.$transaction.mockResolvedValue([12, 6, 2, 1, 3, 4, 1, 1, 3, 3]);
+
+    await expect(service.getStats(regularUser)).resolves.toEqual({
+      total: 12,
+      active: 6,
+      urgent: 2,
+      overdue: 1,
+      unassigned: 3,
+      byStatus: {
+        [TicketStatus.OPEN]: 4,
+        [TicketStatus.IN_PROGRESS]: 1,
+        [TicketStatus.WAITING_USER]: 1,
+        [TicketStatus.RESOLVED]: 3,
+        [TicketStatus.CLOSED]: 3,
+      },
+    });
+    expect(prisma.ticket.count).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        createdById: regularUser.id,
+      }),
+    });
+  });
+
   it('hides ticket details that do not belong to regular users', async () => {
     const { prisma, service } = createService();
     prisma.ticket.findFirst.mockResolvedValue(null);
