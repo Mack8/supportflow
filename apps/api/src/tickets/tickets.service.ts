@@ -81,19 +81,31 @@ export class TicketsService {
 
   async findAll(query: FindTicketsQueryDto) {
     const where = this.buildWhere(query);
-    const { skip, take } = this.resolvePagination(query);
+    const { page, skip, take } = this.resolvePagination(query);
+    const [total, data] = await this.prisma.$transaction([
+      this.prisma.ticket.count({ where }),
+      this.prisma.ticket.findMany({
+        where,
+        skip,
+        take,
+        select: this.ticketSelect,
+        orderBy: [
+          { priority: 'desc' },
+          { dueAt: 'asc' },
+          { createdAt: 'desc' },
+        ],
+      }),
+    ]);
 
-    return this.prisma.ticket.findMany({
-      where,
-      skip,
-      take,
-      select: this.ticketSelect,
-      orderBy: [
-        { priority: 'desc' },
-        { dueAt: 'asc' },
-        { createdAt: 'desc' },
-      ],
-    });
+    return {
+      data,
+      meta: {
+        page,
+        limit: take,
+        total,
+        totalPages: Math.ceil(total / take),
+      },
+    };
   }
 
   async findOne(id: string) {
@@ -258,6 +270,7 @@ export class TicketsService {
     const limit = query.limit ?? this.defaultPageLimit;
 
     return {
+      page,
       skip: (page - 1) * limit,
       take: limit,
     };
